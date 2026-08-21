@@ -1,0 +1,5 @@
+python-docx
+playwright
+Pillow
+pyinstaller
+requests
