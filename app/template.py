@@ -6,7 +6,7 @@ import html
 import sys
 from pathlib import Path
 
-from parser import DayMenu
+from parser import DayMenu, format_month_day
 
 if getattr(sys, "frozen", False):
     FONTS_DIR = Path(sys._MEIPASS) / "fonts"
@@ -75,7 +75,7 @@ def build_day_html(day: DayMenu, variant: str = "main") -> str:
         row_divider = "rgba(241,239,232,0.12)"
         emphasis_bg = "rgba(171,138,88,0.09)"
 
-    date_str = day.menu_date.strftime("%B %-d, %Y").upper()
+    date_str = format_month_day(day.menu_date).upper()
 
     rows_html = []
     for row in day.rows:

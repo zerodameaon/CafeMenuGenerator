@@ -34,7 +34,7 @@ sys.path.insert(0, str(app_dir))
 
 BRIGHTSIGN_HELP_DIR = app_dir / "brightsign_help"
 
-from parser import parse_menu_docx, MenuParseError, DayMenu
+from parser import parse_menu_docx, MenuParseError, DayMenu, format_month_day
 from renderer import render_days, render_preview_png_bytes, RenderValidationError
 import brightsign_client
 import bpsx_schedule
@@ -622,7 +622,7 @@ class App:
             row = Frame(self.preview_frame, pady=6, bg=BG)
             row.pack(fill="x")
             Label(
-                row, text=f"{day.day_name} — {day.menu_date.strftime('%B %-d, %Y')}",
+                row, text=f"{day.day_name} — {format_month_day(day.menu_date)}",
                 anchor="w", bg=BG, fg=FG,
             ).pack(fill="x")
             Label(row, image=tk_img, bg=BG).pack()
@@ -650,7 +650,7 @@ class App:
             var = BooleanVar(value=True)
             day_vars[day.day_name] = var
             ttk.Checkbutton(
-                win, text=f"{day.day_name} — {day.menu_date.strftime('%B %-d, %Y')}", variable=var,
+                win, text=f"{day.day_name} — {format_month_day(day.menu_date)}", variable=var,
             ).pack(anchor="w", padx=24, pady=2)
 
         Label(
@@ -740,7 +740,7 @@ class App:
             var = BooleanVar(value=True)
             day_vars[day.day_name] = var
             ttk.Checkbutton(
-                win, text=f"{day.day_name} — {day.menu_date.strftime('%B %-d, %Y')}", variable=var,
+                win, text=f"{day.day_name} — {format_month_day(day.menu_date)}", variable=var,
             ).pack(anchor="w", padx=24, pady=2)
 
         def do_update():

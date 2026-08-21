@@ -45,7 +45,12 @@ rendering engine are bundled inside the packaged `.app`.
   bundled inside the app.
 
 **Running from source:**
-- macOS (Intel or Apple Silicon)
+- macOS (Intel or Apple Silicon) — not currently tested on Windows or
+  Linux. The GUI (Tkinter), rendering (Playwright/Chromium), and BrightSign
+  file handling are all cross-platform libraries in principle, but
+  `build_app.sh` packages a macOS `.app` specifically (macOS-only icon
+  format, macOS bundle layout for Chromium) — a Windows/Linux build would
+  need its own packaging script.
 - Python 3.11+
 - [brightAuthor:connected](https://www.brightsign.biz/) for the actual
   publish-to-player step (not automated — this app prepares the files

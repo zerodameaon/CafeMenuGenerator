@@ -38,6 +38,14 @@ class MenuParseError(Exception):
     pass
 
 
+def format_month_day(d: date) -> str:
+    """Formats a date as e.g. "August 17, 2026" without a leading zero on
+    the day. strftime's "%-d" (no leading zero) is a Unix-only extension —
+    Windows' C runtime raises ValueError on it — so the day number is
+    built manually here instead, to keep this working cross-platform."""
+    return f"{d.strftime('%B')} {d.day}, {d.year}"
+
+
 def _iter_paragraph_lines(doc: docx.Document) -> list[str]:
     lines = []
     for p in doc.paragraphs:
