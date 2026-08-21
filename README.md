@@ -29,9 +29,23 @@ chore into a one-click tool.
 Everything runs with **zero network calls** — fonts and the Chromium
 rendering engine are bundled inside the packaged `.app`.
 
-## Requirements
+## System requirements
 
-- macOS (Apple Silicon)
+**Packaged `.app` (`The Cafe Menu Sign Generator.zip`, from Releases):**
+- macOS on **Apple Silicon (arm64)** — M1 or later. The bundled Chromium
+  binary and the PyInstaller build are both architecture-specific to
+  whatever machine built them; this release was built on an arm64 Mac, so
+  it will **not** run on an Intel (x86_64) Mac. Building from source on an
+  Intel Mac should still work (see below) — it just needs its own build.
+- No minimum macOS version has been formally verified; it was built and
+  tested on a current macOS release. If you hit a launch failure on an
+  older macOS version, building from source on that machine is the
+  fallback.
+- No internet connection needed at runtime — fonts and Chromium are
+  bundled inside the app.
+
+**Running from source:**
+- macOS (Intel or Apple Silicon)
 - Python 3.11+
 - [brightAuthor:connected](https://www.brightsign.biz/) for the actual
   publish-to-player step (not automated — this app prepares the files
@@ -48,6 +62,13 @@ python3 app/icon_src/make_icon.py   # generates app/AppIcon.icns
 cd app
 python3 app.py
 ```
+
+## Download
+
+Prebuilt `.app` releases (Apple Silicon Macs) are available under
+[Releases](../../releases) — download the `.zip`, unzip, then right-click
+the app → Open (once) to get past Gatekeeper, since it isn't notarized by
+Apple.
 
 ## Build the standalone offline `.app`
 
