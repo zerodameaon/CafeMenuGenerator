@@ -106,6 +106,19 @@ def parse_menu_docx(path: str, start_monday: date) -> list[DayMenu]:
 
 
 def _parse_day_block(day_name: str, block_lines: list[str]) -> list[MenuRow]:
+    """Builds this day's rows from whatever's actually present in the
+    document. Not every week has every item on every day (e.g. a day might
+    skip its soup, or have no Veggie Entrée) — a missing line is simply
+    left out of that day's sign rather than treated as an error. The
+    template's CSS sizes rows by flex weight, not a fixed row count, so a
+    shorter day's rows just take up the freed-up space; no layout changes
+    needed for a variable number of rows.
+
+    The only things still treated as real errors are ones that indicate
+    the document itself is malformed rather than a day simply having fewer
+    items: Friday listing both soups at once (ambiguous — should be
+    exactly one or none), and a day ending up with zero rows at all
+    (suggests a parsing problem, not an intentionally sparse day)."""
     parsed: dict[str, str] = {}
     has_sushi = False
 
@@ -124,13 +137,12 @@ def _parse_day_block(day_name: str, block_lines: list[str]) -> list[MenuRow]:
     rows: list[MenuRow] = []
 
     breakfast = parsed.get("Breakfast")
-    if breakfast is None:
-        raise MenuParseError(f"{day_name}: missing 'Breakfast' line.")
-    rows.append(MenuRow(label="Breakfast", item=breakfast))
+    if breakfast is not None:
+        rows.append(MenuRow(label="Breakfast", item=breakfast))
 
+    veg = parsed.get("Veg Soup Du Jour")
+    nonveg = parsed.get("Soup Du Jour")
     if day_name == "Friday":
-        veg = parsed.get("Veg Soup Du Jour")
-        nonveg = parsed.get("Soup Du Jour")
         if veg and nonveg:
             raise MenuParseError(
                 "Friday: found both veg and non-veg soup lines; expected only one."
@@ -139,33 +151,27 @@ def _parse_day_block(day_name: str, block_lines: list[str]) -> list[MenuRow]:
             rows.append(MenuRow(label="Veg Soup Du Jour", item=veg))
         elif nonveg:
             rows.append(MenuRow(label="Soup Du Jour", item=nonveg))
-        else:
-            raise MenuParseError("Friday: no soup line found (expected exactly one).")
     else:
-        veg = parsed.get("Veg Soup Du Jour")
-        nonveg = parsed.get("Soup Du Jour")
-        if not veg:
-            raise MenuParseError(f"{day_name}: missing 'Vegetarian Soup Du Jour' line.")
-        if not nonveg:
-            raise MenuParseError(f"{day_name}: missing 'Non-Vegetarian Soup Du Jour' line.")
-        rows.append(MenuRow(label="Veg Soup Du Jour", item=veg))
-        rows.append(MenuRow(label="Soup Du Jour", item=nonveg))
+        if veg:
+            rows.append(MenuRow(label="Veg Soup Du Jour", item=veg))
+        if nonveg:
+            rows.append(MenuRow(label="Soup Du Jour", item=nonveg))
 
     main_entree = parsed.get("Main Entrée")
-    if main_entree is None:
-        raise MenuParseError(f"{day_name}: missing 'Main Entrée' line.")
-    rows.append(MenuRow(label="Main Entrée", item=main_entree, emphasis=True))
+    if main_entree is not None:
+        rows.append(MenuRow(label="Main Entrée", item=main_entree, emphasis=True))
 
     veggie_entree = parsed.get("Veggie Entrée")
-    if veggie_entree is None:
-        raise MenuParseError(f"{day_name}: missing 'Veggie Entrée' line.")
-    rows.append(MenuRow(label="Veggie Entrée", item=veggie_entree, emphasis=True))
+    if veggie_entree is not None:
+        rows.append(MenuRow(label="Veggie Entrée", item=veggie_entree, emphasis=True))
 
-    if day_name == "Wednesday":
-        if not has_sushi:
-            raise MenuParseError(
-                "Wednesday: missing standalone 'Assorted Sushi' line after Veggie Entrée."
-            )
+    if day_name == "Wednesday" and has_sushi:
         rows.append(MenuRow(label="Assorted Sushi", item="Assorted Sushi", muted=True))
+
+    if not rows:
+        raise MenuParseError(
+            f"{day_name}: no recognized menu lines found at all — check the "
+            "document's formatting for this day."
+        )
 
     return rows

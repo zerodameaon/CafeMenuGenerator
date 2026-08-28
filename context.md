@@ -91,6 +91,38 @@ or item text via `parser.py`'s output in a scratch script, run it through
 actually raised — don't just trust that the code "looks right." This
 bit us once already.
 
+### Missing menu items are dropped, not errors (2026-08-28)
+
+`parser.py`'s `_parse_day_block()` originally treated every field
+(Breakfast, both soups on non-Friday days, Main Entrée, Veggie Entrée,
+Wednesday's sushi line) as required, raising `MenuParseError` if any were
+absent — reasonable when every real week actually had every item, but the
+user reported a real week's document that didn't (e.g. only one soup line
+on Monday and Thursday, no Veggie Entrée at all on Friday). Real weekly
+menus vary which items appear per day, so a missing line is now simply
+left out of that day's rows instead of blocking the whole export.
+
+This works with no `template.py` changes: rows are already sized by CSS
+flex-grow (`flex: {weight}` per row, see `DAY_TYPE_SIZING`), not a fixed
+row count, so a day with fewer rows just gives each remaining row more
+vertical space — verified by rendering a 3-row day and a real 4-row week
+(`Aug 31-Sept 4.docx`) and confirming no wrapping and no crash.
+
+**Still treated as real errors** (signals of a malformed document, not an
+intentionally sparse day):
+- Friday listing *both* a veg and non-veg soup line — still ambiguous,
+  since exactly one (or now, none) is expected.
+- A day ending up with **zero** recognized rows at all — almost certainly
+  a parsing problem (wrong day-name spelling, garbled formatting) rather
+  than a day that legitimately has nothing on it.
+
+Note: there's a pre-existing, unrelated layout characteristic — even a
+full 5-row day doesn't visually fill the canvas's full 600px height (some
+dead space below the last row) — confirmed present on a normal 5-row day
+too while investigating this, so it isn't something this change caused.
+Left alone since it wasn't part of what was reported broken; worth a
+separate look if it ever needs fixing.
+
 ### Logo split: on the app icon, not on the menu signs
 
 Earlier iterations put a burger+sushi-roll icon in the brand column of
