@@ -153,9 +153,11 @@ BRIGHTSIGN_STEPS = [
         "One-time setup — only needed once, ever",
         "Skip this if the schedule's already set up. From the Advanced "
         'menu: "Generate Schedule (.bpsx)… [one-time setup]" (after a '
-        "preview). Pick the days and one shared start/end time, then save "
-        "the file. In brightAuthor:connected: File → Open, switch the "
-        "file-type filter to Schedule, open that file, then Publish.\n\n"
+        "preview). Pick the days, one shared start/end time, and the "
+        "shared Brightsign folder (the one with the five "
+        '"Cafe Menu <Day>.bpfx" files in it), then save the file. In '
+        "brightAuthor:connected: File → Open, switch the file-type "
+        "filter to Schedule, open that file, then Publish.\n\n"
         "Each weekday's schedule entry recurs every week, forever — you "
         "will not need to touch scheduling again after this.",
         "03_schedule_empty.png",
@@ -683,8 +685,17 @@ class App:
                 messagebox.showerror("Bad time", "Start/End must be in 24-hour HH:MM format (e.g. 06:00).")
                 return
 
+            bpfx_dir_str = filedialog.askdirectory(
+                title="Pick the shared Brightsign folder (contains the Cafe Menu <Day>.bpfx files)"
+            )
+            if not bpfx_dir_str:
+                return
+            presentation_path = str(Path(bpfx_dir_str).resolve())
+            if not presentation_path.endswith("/"):
+                presentation_path += "/"
+
             try:
-                schedule = bpsx_schedule.build_schedule(selected, start, end)
+                schedule = bpsx_schedule.build_schedule(selected, start, end, presentation_path)
             except Exception as e:
                 messagebox.showerror("Recipe Didn't Work Out", f"{e}\n\n{traceback.format_exc()}")
                 return

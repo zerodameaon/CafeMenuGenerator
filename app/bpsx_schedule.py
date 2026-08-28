@@ -70,12 +70,24 @@ all 5 real entries and appears to be a required-but-otherwise-unused
 placeholder once recurrenceGoesForever is true (bAc's UI still needs some
 end-date value even for a schedule that never actually ends).
 
-PRESENTATION_PATH and SCOPE below are specific to this cafe's one bAc
-installation/project (confirmed identical across all entries in the real
-exported file) — they're not something a fresh install could safely guess,
-so they're hardcoded constants rather than parameters. If the user ever
-recreates their bAc project setup, re-export a schedule from bAc and check
-its presentationLocator.path/scope match these before trusting this again.
+SCOPE below is specific to this cafe's one bAc installation/project
+(confirmed identical across all entries in the real exported file) — it's
+an opaque internal id, not a filesystem path, so there's no way to derive
+it from anything the app knows; it's hardcoded, and would need updating
+(re-export a schedule from bAc and check its presentationLocator.scope)
+if the user ever recreates their bAc project setup.
+
+PRESENTATION_PATH used to be hardcoded the same way, but that was a real
+bug (2026-08-28): a hardcoded guess at the bAc computer's absolute path to
+the shared presentation folder broke the moment the app was actually run
+from a different computer or account than the one the guess was based on
+— bAc showed "Open presentation error — file not found" for the image
+asset in bpfx_update.py's equivalent field, which hit this exact same
+hardcoded-path pattern. build_schedule() now takes presentation_path as a
+required argument instead — the caller must pass the real folder the
+.bpfx files live in (the same folder the user already picks when running
+"Update This Week's Presentations…"), so the schedule always points at
+wherever those files actually are on whatever machine is running this.
 """
 from __future__ import annotations
 
@@ -92,7 +104,6 @@ DAY_BITMASK = {
     "Friday": 32,
 }
 
-PRESENTATION_PATH = "/Users/stbpa/Documents/Brightsign/"
 SCOPE = "755c3be30c4ebb4f"
 
 
@@ -100,7 +111,9 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
-def _new_entry(day_name: str, day_date: date, duration_minutes: int, start: time) -> dict:
+def _new_entry(
+    day_name: str, day_date: date, duration_minutes: int, start: time, presentation_path: str
+) -> dict:
     start_dt = datetime(day_date.year, day_date.month, day_date.day, start.hour, start.minute, tzinfo=timezone.utc)
     end_date = day_date + timedelta(days=1)
     recurrence_end = datetime(end_date.year, end_date.month, end_date.day, start.hour, 59, 59, 999000, tzinfo=timezone.utc)
@@ -108,7 +121,7 @@ def _new_entry(day_name: str, day_date: date, duration_minutes: int, start: time
         "id": str(uuid.uuid4()),
         "presentationLocator": {
             "name": f"Cafe Menu {day_name}.bpfx",
-            "path": PRESENTATION_PATH,
+            "path": presentation_path,
             "networkId": 0,
             "location": "Local",
             "assetType": "Project",
@@ -127,14 +140,21 @@ def _new_entry(day_name: str, day_date: date, duration_minutes: int, start: time
     }
 
 
-def build_schedule(day_entries: list[tuple[str, date]], start: time, end: time) -> dict:
+def build_schedule(
+    day_entries: list[tuple[str, date]], start: time, end: time, presentation_path: str
+) -> dict:
     """Builds a fresh .bpsx schedule (as a dict, ready for write_schedule)
     containing one forever-recurring entry per (day_name, date) in
     day_entries, all running from `start` to `end` every week (same time
     every day). day_entries is expected to be a subset of Monday..Friday,
     in any order. Since each entry recurs forever, this only needs to be
     generated once — week-to-week menu changes are handled by
-    bpfx_update.py rewriting each day's presentation image instead."""
+    bpfx_update.py rewriting each day's presentation image instead.
+
+    presentation_path must be the real, absolute path to the folder the
+    five "Cafe Menu <Day>.bpfx" files live in, as seen from whatever
+    machine will actually open this schedule in bAc — see the module
+    docstring for why this can't be a hardcoded guess."""
     if not day_entries:
         raise ValueError("No days selected — pick at least one day to schedule.")
 
@@ -146,7 +166,7 @@ def build_schedule(day_entries: list[tuple[str, date]], start: time, end: time) 
 
     by_id = {}
     for day_name, day_date in day_entries:
-        entry = _new_entry(day_name, day_date, duration_minutes, start)
+        entry = _new_entry(day_name, day_date, duration_minutes, start, presentation_path)
         by_id[entry["id"]] = entry
 
     return {

@@ -533,20 +533,31 @@ five `"Cafe Menu <Day>.bpfx"` files at once, atomically (validates every
 day's file exists and has the expected single-image shape *before*
 writing any of them, so a partial week never gets half-applied).
 
-**The two-machine path problem.** Each asset's original `path` field
-(`/Users/stbpa/Downloads/files(2)/`) lives on the bAc computer's own local
-disk — outside `Documents/Brightsign/`, the only folder actually shared
-between machines (mounted here as `/Volumes/SNAPMAKER`, but
-`/Users/stbpa/Documents/Brightsign/` from bAc's own vantage point — same
-value as `PRESENTATION_PATH` in `bpsx_schedule.py`). This Mac can only
-write bytes into the shared folder, not into stbpa's Downloads folder on a
-different physical computer. So `update_presentation()` takes both a
-`local_write_dir` (where this process actually copies the PNG — the
-SNAPMAKER mount) and a `remote_path` (what gets written into the `.bpfx`'s
-`path`/`locator` fields — the same folder's absolute path as bAc's own
-machine will resolve it at Publish time). Every updated asset is
-redirected into the shared folder this way, rather than trying to preserve
-its original (unreachable) location.
+**The path problem, and a real bug it caused (2026-08-28).** Each asset's
+original `path` field (`/Users/stbpa/Downloads/files(2)/`) doesn't live in
+the shared `Documents/Brightsign/` folder at all, so the new path/locator
+has to point somewhere else. The first fix guessed at a fixed remote path
+(`/Users/stbpa/Documents/Brightsign/`, matching the then-hardcoded
+`PRESENTATION_PATH` in `bpsx_schedule.py`) and had `update_presentation()`
+take a separate `local_write_dir` (where this process actually writes the
+PNG) and `remote_path` (what gets written into the JSON) — reasoning that
+bAc always ran on one specific other Mac reachable only via a shared
+mount. That guess broke in practice: bAc showed "Open presentation error
+— file not found" for the image, because the app was actually run
+somewhere the hardcoded path didn't match. Fixed by dropping the
+hardcoded path/parameter entirely — `update_presentation()` now writes
+`local_write_dir.resolve()` itself into the `.bpfx`'s path/locator fields,
+so wherever the PNG is actually saved is exactly what bAc is told to open,
+on whatever machine and account is actually running this. The identical
+bug existed in `bpsx_schedule.py`'s `PRESENTATION_PATH` for the schedule's
+`presentationLocator.path` (same hardcoded-guess pattern, just not yet
+reported since the schedule is only generated once) — `build_schedule()`
+now takes `presentation_path` as a required argument instead, and
+`generate_schedule()` in `app.py` prompts for the shared folder the same
+way `update_presentations()` already did. `SCOPE` (an opaque per-bAc-
+installation id, not a filesystem path) is unaffected and still
+hardcoded — there's no folder-derived way to guess it, and no evidence
+yet that it's actually wrong.
 
 **GUI**: "Update This Week's Presentations…" is now the *only* bottom-bar
 button left, enabled after a successful preview. Prompts for the shared

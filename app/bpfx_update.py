@@ -34,19 +34,23 @@ built-in widget, not an image asset), so no day-name matching is required
 inside the file itself — only the caller needs to already know which
 .bpfx corresponds to which weekday.
 
-One more wrinkle: the asset's original path
-("/Users/stbpa/Downloads/files(2)/") lives on the bAc computer's own local
-disk, outside the "Documents/Brightsign/" folder that's actually shared
-between machines (mounted here as /Volumes/SNAPMAKER, but
-"/Users/stbpa/Documents/Brightsign/" from bAc's own vantage point — the
-same constant as PRESENTATION_PATH in bpsx_schedule.py). This Mac can only
-write bytes into the shared folder, not into stbpa's Downloads. So instead
-of preserving the original path, every updated asset is redirected to live
-in that shared folder: local_write_dir is where THIS process actually
-copies the PNG (the /Volumes/SNAPMAKER mount), while remote_path is what
-gets written into the .bpfx's path/locator fields — the same folder's
-absolute path as bAc's own machine will see it. Both must refer to the
-same underlying shared folder, just spelled differently per machine.
+One more wrinkle, learned the hard way: an earlier version of this module
+hardcoded the asset's new path/locator to a fixed remote path
+("/Users/stbpa/Documents/Brightsign/") — a guess at what the bAc
+computer's own absolute path to the shared folder would be. That broke in
+practice: bAc showed "Open presentation error — file not found" for the
+image, because the .bpfx was actually opened from wherever the user
+really saved it (a different Mac, a different account, a different
+folder name), which didn't match the hardcoded guess. There's no way to
+know that path in advance, and no need to guess it: whatever folder
+local_write_dir points to (the folder passed in — normally wherever the
+user picked when running "Update This Week's Presentations…") is by
+definition where the .bpfx and its PNG both actually live once written,
+on whatever computer is running this. So the path/locator fields are
+always derived straight from local_write_dir itself, not any hardcoded
+constant — this makes the written file self-consistent and portable
+across machines and accounts, since bAc opens the .bpfx from that same
+real folder.
 """
 from __future__ import annotations
 
@@ -54,8 +58,6 @@ import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-
-REMOTE_PRESENTATION_PATH = "/Users/stbpa/Documents/Brightsign/"
 
 
 class BpfxUpdateError(Exception):
@@ -70,15 +72,13 @@ def update_presentation(
     bpfx_path: Path,
     new_png_path: Path,
     local_write_dir: Path,
-    remote_path: str = REMOTE_PRESENTATION_PATH,
 ) -> Path:
     """Rewrites bpfx_path in place so its one image asset points at
-    new_png_path, and copies new_png_path into local_write_dir (this
-    machine's mount of the shared Brightsign folder). The .bpfx's
-    path/locator fields are written using remote_path instead — the same
-    shared folder's absolute path as seen from the bAc computer itself,
-    since that's the path bAc will actually resolve at Publish time.
-    Returns the local path the PNG was copied to.
+    new_png_path, copying new_png_path into local_write_dir. The .bpfx's
+    path/locator fields are written using local_write_dir's own resolved
+    absolute path — wherever the PNG is actually being saved is where bAc
+    needs to find it, on whatever machine this happens to run on. Returns
+    the local path the PNG was copied to.
 
     Raises BpfxUpdateError if the file doesn't have exactly one image asset
     to update (the shape this was built against).
@@ -116,9 +116,13 @@ def update_presentation(
     stat = dest_path.stat()
     last_modified = _iso(datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc))
 
+    resolved_dir = str(local_write_dir.resolve())
+    if not resolved_dir.endswith("/"):
+        resolved_dir += "/"
+
     asset["name"] = new_name
-    asset["path"] = remote_path
-    asset["locator"] = f"file://{remote_path}{new_name}"
+    asset["path"] = resolved_dir
+    asset["locator"] = f"file://{resolved_dir}{new_name}"
     asset["fileSize"] = stat.st_size
     asset["lastModifiedDate"] = last_modified
 
@@ -146,7 +150,6 @@ def update_presentation(
 def update_week(
     bpfx_dir: Path,
     day_to_png: dict[str, Path],
-    remote_path: str = REMOTE_PRESENTATION_PATH,
 ) -> list[Path]:
     """Updates "Cafe Menu <Day>.bpfx" for each day_name -> png_path pair in
     day_to_png (e.g. {"Monday": Path(...), ...}). bpfx_dir doubles as
@@ -172,6 +175,6 @@ def update_week(
     written: list[Path] = []
     for day_name, png_path in day_to_png.items():
         written.append(
-            update_presentation(resolved[day_name], png_path, bpfx_dir, remote_path)
+            update_presentation(resolved[day_name], png_path, bpfx_dir)
         )
     return written

@@ -123,10 +123,12 @@ Tucked away in the **Advanced** menu (rarely needed day to day):
   your choice without touching any presentation, if you just want the
   images themselves.
 - **Generate Schedule (.bpsx)… [one-time setup]** — pick which days to
-  schedule (all 5 by default) and one shared start/end time, then save.
-  This only needs to be done **once ever** — each day's entry recurs
-  weekly forever. In brightAuthor:connected: File → Open, switch the
-  file-type filter to Schedule, open the generated file, then Publish.
+  schedule (all 5 by default), one shared start/end time, and the shared
+  Brightsign folder (the same one used by "Update This Week's
+  Presentations…"), then save. This only needs to be done **once ever**
+  — each day's entry recurs weekly forever. In brightAuthor:connected:
+  File → Open, switch the file-type filter to Schedule, open the
+  generated file, then Publish.
 
 Output filenames: `The_Cafe_Menu_<Day>_<YYYY-MM-DD>.png`.
 
