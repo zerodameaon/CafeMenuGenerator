@@ -67,9 +67,13 @@ INSTRUCTIONS_TEXT = """HOW TO COOK UP MENU SIGNS, STEP BY STEP
        Non-Vegetarian Soup Du Jour: <item>
        Main Entrée: <item>
        Veggie Entrée: <item>
-   Wednesday should additionally have a standalone "Assorted Sushi" line.
-   Friday normally has only ONE soup line (veg OR non-veg, not both) —
-   whichever is present is used and labeled to match.
+   Wednesday can additionally have a standalone "Assorted Sushi" line.
+   Not every day needs every line — a day can skip a soup, an entrée,
+   etc., and that row is simply left off that day's sign. Friday usually
+   has only ONE soup line (veg OR non-veg, not both, though it can also
+   have none) — whichever is present is used and labeled to match; having
+   BOTH on Friday is still treated as an error (that's ambiguous, not
+   just sparse).
 
 2. Starting Monday
    Confirm the date of that week's Monday (YYYY-MM-DD). Tuesday–Friday
@@ -83,8 +87,10 @@ INSTRUCTIONS_TEXT = """HOW TO COOK UP MENU SIGNS, STEP BY STEP
 4. Whip Up a Preview
    Reads the document and renders all five days on screen at reduced
    size so you can check the content and layout before generating the
-   final files. If parsing fails (e.g. a day is missing a required
-   line), you'll get an error describing exactly what's missing.
+   final files. Parsing only fails if a day ends up with nothing
+   recognized at all (likely a formatting problem, not an intentionally
+   sparse day) or if Friday lists both soup lines at once — you'll get
+   an error describing exactly what's wrong.
 
 5. Update This Week's Presentations…
    Check off which days should get this week's new image (all 5 checked

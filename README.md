@@ -13,8 +13,10 @@ chore into a one-click tool.
 
 ## What it does
 
-1. **Parses** the week's lunch menu from a `.docx` file (handles a
-   Wednesday sushi-only row and Friday's veg/non-veg soup ambiguity).
+1. **Parses** the week's lunch menu from a `.docx` file — handles a
+   Wednesday sushi-only row, Friday's veg/non-veg soup ambiguity, and
+   days that simply skip an item (not every day has every line every
+   week; a missing item is just left off that day's sign).
 2. **Renders** five pixel-exact 3840×600px signs (4x supersampled, Lanczos
    downsampled) matching a fixed maroon digital-signage design, with a
    pre-export check that blocks the export if any text would wrap.
@@ -135,7 +137,8 @@ Output filenames: `The_Cafe_Menu_<Day>_<YYYY-MM-DD>.png`.
 ## Project layout
 
 - `app/parser.py` — reads the `.docx`, extracts Mon–Fri rows, handles the
-  Wednesday sushi line and Friday's veg/non-veg soup ambiguity.
+  Wednesday sushi line, Friday's veg/non-veg soup ambiguity, and days
+  that skip an item entirely.
 - `app/template.py` — builds the self-contained HTML/CSS per day (fonts
   embedded as base64 data URIs, no external assets, no logo on the sign
   itself).

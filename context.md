@@ -413,14 +413,16 @@ this is the current, correct design, not the original one:**
   existing `.bpsx` to copy `presentationLocator.path` and the opaque
   `scope` field from, and *appended* new entries to that file's full
   history. The user rejected this UX ("it should not be asking for an
-  existing file, it should be creating the file") — so `PRESENTATION_PATH`
-  and `SCOPE` are now hardcoded constants at the top of
+  existing file, it should be creating the file") — so `presentationLocator.path`
+  and `scope` were initially both hardcoded constants at the top of
   `bpsx_schedule.py` (confirmed identical across all 26 real historical
   entries), and `build_schedule()` creates a **fresh, standalone** file
   from scratch containing only the days you pick — it no longer reads or
-  merges with any existing schedule file at all. If the user ever
-  recreates their bAc project setup, these two constants would need
-  updating — re-export a schedule from bAc and check.
+  merges with any existing schedule file at all. (The hardcoded path was
+  later found to be wrong on a different machine and turned into a
+  required `presentation_path` argument instead — see the path-problem
+  note further down; `SCOPE` is still hardcoded, since it's an opaque id
+  with no folder-derived equivalent.)
 - **Day picker, not a fixed Mon–Fri list.** A small dialog shows a
   checkbox per day (from `self.days`, so dates are always right),
   all checked by default, so an unusual week (holiday closure, etc.) can
