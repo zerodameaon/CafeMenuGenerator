@@ -32,6 +32,8 @@ class DayMenu:
     day_name: str
     menu_date: date
     rows: list[MenuRow] = field(default_factory=list)
+    closed: bool = False
+    closed_reason: str = ""
 
 
 class MenuParseError(Exception):
@@ -99,10 +101,29 @@ def parse_menu_docx(path: str, start_monday: date) -> list[DayMenu]:
     days: list[DayMenu] = []
     for i, day_name in enumerate(DAY_NAMES):
         menu_date = start_monday + timedelta(days=i)
+        closed_reason = _closed_reason(day_blocks[day_name])
+        if closed_reason is not None:
+            days.append(DayMenu(
+                day_name=day_name, menu_date=menu_date,
+                closed=True, closed_reason=closed_reason,
+            ))
+            continue
         rows = _parse_day_block(day_name, day_blocks[day_name])
         days.append(DayMenu(day_name=day_name, menu_date=menu_date, rows=rows))
 
     return days
+
+
+def _closed_reason(block_lines: list[str]) -> str | None:
+    """A day block with no colon-delimited menu lines, but a line mentioning
+    "closed", is the office announcing a closure (e.g. a holiday) rather than
+    a malformed section. Returns the closure line's text (for display) if so,
+    else None."""
+    for line in block_lines:
+        stripped = line.strip()
+        if "closed" in stripped.lower() and _split_label_item(stripped) is None:
+            return stripped
+    return None
 
 
 def _parse_day_block(day_name: str, block_lines: list[str]) -> list[MenuRow]:

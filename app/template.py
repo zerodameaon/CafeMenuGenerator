@@ -77,6 +77,74 @@ def build_day_html(day: DayMenu, variant: str = "main") -> str:
 
     date_str = format_month_day(day.menu_date).upper()
 
+    if day.closed:
+        closed_html = f"""
+    <div class="closed">
+      <div class="closed-label" style="color:{gold};{gold_text_shadow}">CLOSED</div>
+      <div class="closed-reason" style="color:{brand_text}">{html.escape(day.closed_reason)}</div>
+    </div>"""
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+{_font_face_css()}
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+html, body {{
+  width: 3840px; height: 600px;
+  background: {bg};
+  font-family: 'Libre Franklin', sans-serif;
+  overflow: hidden;
+}}
+.canvas {{ display: flex; width: 3840px; height: 600px; }}
+.brand {{
+  width: 660px; flex-shrink: 0;
+  padding: 40px 0 32px 56px;
+  border-right: 1px solid {divider};
+  display: flex; flex-direction: column;
+}}
+.logo {{
+  font-weight: 600; font-size: 92px; line-height: 0.95; letter-spacing: -0.01em;
+}}
+.logo .the {{ color: {brand_text}; }}
+.logo .cafe {{ color: {gold}; {gold_text_shadow} }}
+.subtitle {{
+  font-style: italic; font-weight: 600; font-size: 36px; color: {muted};
+  letter-spacing: 0.04em; margin-top: 10px;
+}}
+.spacer {{ flex: 1; }}
+.day-name {{ font-weight: 600; font-size: 56px; color: {brand_text}; line-height: 1; }}
+.date {{
+  font-weight: 600; font-size: 29px; color: {gold}; letter-spacing: 0.11em;
+  text-transform: uppercase; margin-top: 8px; {gold_text_shadow}
+}}
+.menu {{
+  flex: 1;
+  padding: 40px 64px 32px 64px;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+}}
+.closed {{ text-align: center; }}
+.closed-label {{ font-weight: 600; font-size: 88px; letter-spacing: 0.11em; }}
+.closed-reason {{ font-style: italic; font-weight: 600; font-size: 38px; margin-top: 16px; }}
+</style>
+</head>
+<body>
+<div class="canvas">
+  <div class="brand">
+    <div class="logo"><span class="the">THE </span><span class="cafe">CAFE</span></div>
+    <div class="subtitle">— Daily Menu —</div>
+    <div class="spacer"></div>
+    <div class="day-name">{html.escape(day.day_name)}</div>
+    <div class="date">{date_str}</div>
+  </div>
+  <div class="menu">
+    {closed_html}
+  </div>
+</div>
+</body>
+</html>"""
+
     rows_html = []
     for row in day.rows:
         label_color = muted if row.muted else gold
