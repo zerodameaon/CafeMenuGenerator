@@ -471,9 +471,6 @@ class App:
 
         advanced_menu = Menu(menubar, tearoff=False)
         advanced_menu.add_command(
-            label="Plate It Up (Export PNGs)…", command=self.export, state="disabled"
-        )
-        advanced_menu.add_command(
             label="Generate Schedule (.bpsx)… [one-time setup]", command=self.generate_schedule, state="disabled"
         )
         menubar.add_cascade(label="Advanced", menu=advanced_menu)
@@ -550,6 +547,10 @@ class App:
             bottom, text="Update This Week's Presentations…", command=self.update_presentations, state="disabled"
         )
         self.update_presentations_btn.pack(side="left")
+        self.export_btn = ttk.Button(
+            bottom, text="Plate It Up (Export PNGs)…", command=self.export, state="disabled"
+        )
+        self.export_btn.pack(side="left", padx=(10, 0))
         ttk.Button(
             bottom, text="Recipe (Instructions)", command=lambda: show_brightsign_instructions(self.root)
         ).pack(side="left", padx=(10, 0))
@@ -582,6 +583,8 @@ class App:
 
         self.status_label.config(text="Prepping the ingredients…", fg=MUTED_FG)
         self.advanced_menu.entryconfig(0, state="disabled")
+        self.export_btn.config(state="disabled")
+        self.update_presentations_btn.config(state="disabled")
         self.root.update_idletasks()
 
         try:
@@ -637,8 +640,8 @@ class App:
 
         self.status_label.config(text="Fresh off the grill — give it a taste-test before you plate it up.", fg=GOOD_FG)
         self.advanced_menu.entryconfig(0, state="normal")
-        self.advanced_menu.entryconfig(1, state="normal")
         self.update_presentations_btn.config(state="normal")
+        self.export_btn.config(state="normal")
 
     def generate_schedule(self):
         if not self.days:
@@ -858,7 +861,7 @@ class App:
 
             win.destroy()
             self.status_label.config(text="Plating the final dishes…", fg=MUTED_FG)
-            self.advanced_menu.entryconfig(0, state="disabled")
+            self.export_btn.config(state="disabled")
             self.root.update_idletasks()
             threading.Thread(
                 target=self._export_thread, args=(Path(out_dir), selected_days), daemon=True
@@ -876,7 +879,7 @@ class App:
                     self.status_label.config(
                         text=f"Served! {len(results)} PNG(s) plated up in {out_dir}", fg=GOOD_FG
                     ),
-                    self.advanced_menu.entryconfig(0, state="normal"),
+                    self.export_btn.config(state="normal"),
                     messagebox.showinfo("Order Up!", f"Served:\n{names}"),
                 ),
             )
@@ -886,7 +889,7 @@ class App:
                 lambda: (
                     messagebox.showerror("86'd — Layout Problem", str(e)),
                     self.status_label.config(text="Sent back to the kitchen: text wrapped.", fg=BAD_FG),
-                    self.advanced_menu.entryconfig(0, state="normal"),
+                    self.export_btn.config(state="normal"),
                 ),
             )
         except Exception as e:
@@ -896,7 +899,7 @@ class App:
                 lambda: (
                     messagebox.showerror("Kitchen Fire", err),
                     self.status_label.config(text="Export didn't make it out of the kitchen.", fg=BAD_FG),
-                    self.advanced_menu.entryconfig(0, state="normal"),
+                    self.export_btn.config(state="normal"),
                 ),
             )
 
