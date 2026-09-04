@@ -471,7 +471,7 @@ class App:
 
         advanced_menu = Menu(menubar, tearoff=False)
         advanced_menu.add_command(
-            label="Plate It Up (Export 5 PNGs)…", command=self.export, state="disabled"
+            label="Plate It Up (Export PNGs)…", command=self.export, state="disabled"
         )
         advanced_menu.add_command(
             label="Generate Schedule (.bpsx)… [one-time setup]", command=self.generate_schedule, state="disabled"
@@ -827,22 +827,55 @@ class App:
     def export(self):
         if not self.days:
             return
-        out_dir = filedialog.askdirectory(title="Choose a folder to plate the PNGs into")
-        if not out_dir:
-            return
-        self.status_label.config(text="Plating the final dishes…", fg=MUTED_FG)
-        self.advanced_menu.entryconfig(0, state="disabled")
-        self.root.update_idletasks()
-        threading.Thread(target=self._export_thread, args=(Path(out_dir),), daemon=True).start()
 
-    def _export_thread(self, out_dir: Path):
+        win = Toplevel(self.root, bg=BG)
+        win.title("Plate It Up")
+        win.geometry("380x340")
+
+        Label(
+            win, text="Which days should get a PNG?", bg=BG, fg=FG,
+            font=("", 12, "bold"), anchor="w",
+        ).pack(anchor="w", padx=16, pady=(16, 6))
+
+        day_vars: dict[str, BooleanVar] = {}
+        for day in self.days:
+            label = f"{day.day_name} — {format_month_day(day.menu_date)}"
+            if day.closed:
+                label += "  (Closed)"
+            var = BooleanVar(value=True)
+            day_vars[day.day_name] = var
+            ttk.Checkbutton(win, text=label, variable=var).pack(anchor="w", padx=24, pady=2)
+
+        def do_export():
+            selected_days = [day for day in self.days if day_vars[day.day_name].get()]
+            if not selected_days:
+                messagebox.showwarning("Missing info", "Pick at least one day.")
+                return
+
+            out_dir = filedialog.askdirectory(title="Choose a folder to plate the PNGs into")
+            if not out_dir:
+                return
+
+            win.destroy()
+            self.status_label.config(text="Plating the final dishes…", fg=MUTED_FG)
+            self.advanced_menu.entryconfig(0, state="disabled")
+            self.root.update_idletasks()
+            threading.Thread(
+                target=self._export_thread, args=(Path(out_dir), selected_days), daemon=True
+            ).start()
+
+        ttk.Button(win, text="Export", command=do_export).pack(pady=(16, 12))
+
+    def _export_thread(self, out_dir: Path, selected_days: list[DayMenu]):
         try:
-            results = render_days(self.days, out_dir, variant=self.variant.get(), strict=True)
+            results = render_days(selected_days, out_dir, variant=self.variant.get(), strict=True)
             names = "\n".join(r.png_path.name for r in results)
             self.root.after(
                 0,
                 lambda: (
-                    self.status_label.config(text=f"Served! 5 PNGs plated up in {out_dir}", fg=GOOD_FG),
+                    self.status_label.config(
+                        text=f"Served! {len(results)} PNG(s) plated up in {out_dir}", fg=GOOD_FG
+                    ),
                     self.advanced_menu.entryconfig(0, state="normal"),
                     messagebox.showinfo("Order Up!", f"Served:\n{names}"),
                 ),
