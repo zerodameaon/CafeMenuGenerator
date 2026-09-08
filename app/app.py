@@ -111,12 +111,14 @@ INSTRUCTIONS_TEXT = """HOW TO COOK UP MENU SIGNS, STEP BY STEP
    See "Recipe (Instructions)" in the Help menu for the full weekly
    walkthrough, including the one-time schedule setup.
 
+"Plate It Up (Export PNGs)…" lets you check off which days to export,
+   then saves those PNGs to a folder of your choice, without touching
+   any presentation — useful if you just want the images themselves.
+
 Advanced menu (rarely needed):
-   "Plate It Up (Export 5 PNGs)…" exports the five PNGs to a folder of
-   your choice, without touching any presentation — useful if you just
-   want the images themselves. "Generate Schedule (.bpsx)…" is a
-   one-time setup step; once each weekday's schedule entry is created
-   to recur forever, you never need to run it again.
+   "Generate Schedule (.bpsx)…" is a one-time setup step; once each
+   weekday's schedule entry is created to recur forever, you never
+   need to run it again.
 
 This app makes no network connections — everything (fonts, rendering
 engine) is bundled inside the app. Fully homemade, nothing delivered.
@@ -581,6 +583,10 @@ class App:
             ):
                 return
 
+        # If a prior parse already succeeded, its buttons should stay usable
+        # (against the still-valid self.days) if this reparse attempt fails.
+        had_prior_days = self.days is not None
+
         self.status_label.config(text="Prepping the ingredients…", fg=MUTED_FG)
         self.advanced_menu.entryconfig(0, state="disabled")
         self.export_btn.config(state="disabled")
@@ -592,17 +598,19 @@ class App:
         except MenuParseError as e:
             messagebox.showerror("Recipe Didn't Work Out", str(e))
             self.status_label.config(text="Parsing flopped.", fg=BAD_FG)
+            self._restore_action_buttons(had_prior_days)
             return
         except Exception as e:
             messagebox.showerror("Kitchen Nightmare", f"{e}\n\n{traceback.format_exc()}")
             self.status_label.config(text="Parsing flopped.", fg=BAD_FG)
+            self._restore_action_buttons(had_prior_days)
             return
 
         self.status_label.config(text="Plating the preview…", fg=MUTED_FG)
         self.root.update_idletasks()
-        threading.Thread(target=self._render_preview_thread, daemon=True).start()
+        threading.Thread(target=self._render_preview_thread, args=(had_prior_days,), daemon=True).start()
 
-    def _render_preview_thread(self):
+    def _render_preview_thread(self, had_prior_days: bool):
         try:
             variant = self.variant.get()
             previews = []
@@ -612,11 +620,23 @@ class App:
             self.root.after(0, lambda: self._show_previews(previews))
         except Exception as e:
             err = f"{e}\n\n{traceback.format_exc()}"
-            self.root.after(0, lambda: self._preview_failed(err))
+            self.root.after(0, lambda: self._preview_failed(err, had_prior_days))
 
-    def _preview_failed(self, err: str):
+    def _preview_failed(self, err: str, had_prior_days: bool):
         messagebox.showerror("Preview Burnt to a Crisp", err)
         self.status_label.config(text="Preview didn't make it out of the kitchen.", fg=BAD_FG)
+        self._restore_action_buttons(had_prior_days)
+
+    def _restore_action_buttons(self, had_prior_days: bool):
+        """Re-enable the export/update-presentations buttons after a failed
+        (re)parse or preview render, but only if there's still a previously
+        successful self.days to act on — a first-ever failure should leave
+        them disabled since there's nothing valid to export yet."""
+        if not had_prior_days:
+            return
+        self.advanced_menu.entryconfig(0, state="normal")
+        self.export_btn.config(state="normal")
+        self.update_presentations_btn.config(state="normal")
 
     def _show_previews(self, previews: list[tuple[DayMenu, bytes]]):
         for widget in self.preview_frame.winfo_children():

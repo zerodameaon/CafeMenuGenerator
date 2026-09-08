@@ -120,10 +120,11 @@ ditto -c -k --sequesterRsrc --keepParent "dist/The Cafe Menu Sign Generator.app"
 6. **Recipe (Instructions)** (or Help menu) — the full step-by-step
    walkthrough, including the one-time schedule setup.
 
+- **Plate It Up (Export PNGs)…** — check off which days to export, then
+  saves those PNGs to a folder of your choice without touching any
+  presentation, if you just want the images themselves.
+
 Tucked away in the **Advanced** menu (rarely needed day to day):
-- **Plate It Up (Export 5 PNGs)…** — exports the five PNGs to a folder of
-  your choice without touching any presentation, if you just want the
-  images themselves.
 - **Generate Schedule (.bpsx)… [one-time setup]** — pick which days to
   schedule (all 5 by default), one shared start/end time, and the shared
   Brightsign folder (the same one used by "Update This Week's
