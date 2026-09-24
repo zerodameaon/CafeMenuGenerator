@@ -46,6 +46,9 @@ panels.
   day's HTML at a 4x device-scale-factor viewport, screenshots, then
   Lanczos-downsamples to the exact 3840×600 target (see "Why supersample"
   below). Also runs the wrap/overflow layout check before allowing export.
+- **`player_push.py` / `brightsign_client.py`** — "Push to Player": sends
+  PNGs straight to the BrightSign player over its Local DWS API (see
+  "Direct push to the player").
 - **`app.py`** — Tkinter GUI. Also bootstraps `PLAYWRIGHT_BROWSERS_PATH`
   when running as a frozen PyInstaller build (see "Packaging" below).
 
@@ -148,17 +151,34 @@ app's Finder/Dock icon. Current state:
   intentionally decoupled — don't reintroduce the icon into the sign
   template without being asked.
 
-### Dark-mode readability fix
+### Light and dark mode
 
 Tkinter's native (Aqua) widgets on macOS don't reliably re-theme for dark
-mode — plain `tk.Label`/`Frame`/`Button` widgets were rendering with poor
-contrast when the OS was in dark mode. Fix: `app.py` forces the ttk `clam`
-theme (which draws itself instead of deferring to the OS) with an explicit
-light palette (`BG`, `FG`, `MUTED_FG`, etc. constants near the top of the
-file), and every plain tk widget also gets explicit `bg`/`fg`. The app now
-looks identical regardless of the Mac's appearance setting. If you add new
-widgets, give them explicit colors from those constants — don't leave them
-to inherit defaults.
+mode — plain `tk.Label`/`Frame`/`Button` widgets once rendered with poor
+contrast (dark-on-dark) when the OS was in dark mode. The first fix forced
+a single light palette everywhere. Since 2026-09-24 the app instead has two
+explicit palettes, `LIGHT_PALETTE` and `DARK_PALETTE` in `app.py`, still
+drawn entirely by the app (ttk `clam` theme + explicit colors on every
+plain tk widget) rather than left to Aqua. Both pass WCAG AA contrast
+(≥4.5:1 for text; disabled button text ≥3:1).
+
+- **At launch** the palette follows macOS's appearance, read via
+  `::tk::unsupported::MacWindowStyle isdark` (Tk 8.6.10+; anything else
+  falls back to light).
+- **Live switching:** `App._watch_appearance()` polls every 2s. On a flip it
+  re-runs `_setup_style()` (re-themes all ttk widgets) and `_recolor_tree()`
+  walks every widget in every open window, swapping old palette colors for
+  new ones. The swap is keyed by *role* (background options only hold
+  BG/PANEL_BG/ACCENT, foreground options only the *_FG colors), because light
+  `BG` and `ACCENT_FG` are the same hex. So within one palette, the
+  background colors must be distinct from each other, and so must the
+  foreground colors.
+- **If you add widgets:** give them colors from the palette names (`BG`,
+  `FG`, …) at creation, never literal hex. Anything literal won't follow a
+  switch. ttk-only state colors (hover, disabled, scrollbar thumb) live in
+  the palette dicts and are applied in `_setup_style()`.
+- The sign images themselves are unaffected; they have their own fixed
+  "House Special"/"Lighter Fare" designs.
 
 ### Food-pun copy voice
 
@@ -270,6 +290,18 @@ BrightSign documentation — it mirrors this cafe's actual (now much
 shorter) publish workflow, sourced from a real walkthrough the user wrote
 plus real screenshots of their own brightAuthor:connected setup.
 
+**Restructured 2026-09-24 around Push to Player.** Both the Recipe window
+and Chef's Instructions (`INSTRUCTIONS_TEXT`) now lead with the weekly
+path as *preview → Push to Player*, and put everything brightAuthor:
+connected in a section at the bottom: the one-time setup (Publish the five
+presentations once — push only swaps images inside presentations already
+on the player — and generate the forever-recurring schedule), the old
+"Update This Week's Presentations → Publish" route, and the rule that
+before *any* bAc Publish you must run Update for the current week first
+(a Publish sends whatever images the `.bpfx` files point at, which lag
+behind if the week only went out by push). `BRIGHTSIGN_STEPS` entries of
+the form `(title, None, None)` render as section headings.
+
 - Source screenshots live in `app/brightsign_help/` (bundled into the
   `.app` via `build_app.sh`'s `--add-data`), renamed from the originals in
   `Screenshots/` for clarity (`01_open_baconnected.png` etc.). Two of the
@@ -288,8 +320,8 @@ plus real screenshots of their own brightAuthor:connected setup.
   "this Friday" from "next Friday", it's the same recurring block. If
   next week's `.docx` arrives before the current week's Friday has aired
   and you update all 5 days, Friday's image gets overwritten with next
-  week's menu before this week's Friday plays. This is why "Update This
-  Week's Presentations…" now has its own day-picker (all 5 checked by
+  week's menu before this week's Friday plays. This is why "Push to
+  Player…" and "Update This Week's Presentations…" each have a day-picker (all 5 checked by
   default, mirroring the schedule generator's) — leave Friday unchecked
   until the current week's Friday has actually aired if you're prepping
   ahead. See `update_presentations()` in `app.py`.
@@ -298,7 +330,13 @@ plus real screenshots of their own brightAuthor:connected setup.
   updating to match — nothing here validates itself against the real
   BrightSign software.
 
-## Direct-to-player upload (in progress, read-only so far)
+## Direct-to-player upload — first attempt (history; superseded)
+
+> **Superseded 2026-09-24.** The conclusion at the end of this section
+> ("this player cannot do direct-to-device upload") turned out to be wrong:
+> port 8080 was never the DWS API at all. Direct push now works and ships
+> as "Push to Player" — see **"Direct push to the player"** below. This
+> section is kept for the history and debugging lessons.
 
 The user asked whether the app could upload straight to the BrightSign
 player instead of going through brightAuthor:connected by hand. Findings:
@@ -413,12 +451,97 @@ firmware tested.** Live diagnosis via `curl` against the real player
 
 This means the JSON REST layer that `player-cli` and BrightSign's docs
 describe simply isn't present in this DWS build, independent of firmware
-version, config, or reboot. **Do not resume this approach** without new
-information from BrightSign support directly (the user was pointed at
-support with this exact diagnostic summary). `brightsign_client.py` and
-the "Browse Player Files" panel are left in place — harmless, read-only,
-and they still correctly report the 404 instead of hanging — but
-`upload_file()` should stay unwired until/unless support says otherwise.
+version, config, or reboot. **(Wrong — see the note at the top of this
+section.)** The real cause: 8080 on this player is the brightAuthor:connected
+*presentation's own* web server (`BSP.localServer`, advertised over Bonjour
+as `BRIGHTSIGN-LWS-SERVICE`, `functionality=content`), which naturally has
+no `/api/v1` handlers. The actual Local DWS API was switched off; once the
+user enabled it, it appeared on 80 → redirecting to **HTTPS 443**.
+
+## Direct push to the player (shipped 2026-09-24)
+
+"Push to Player…" sends the week's PNGs straight to the BrightSign player
+and restarts it — no brightAuthor:connected Publish. Proven live before it
+was built: Thursday was swapped to the alt design mid-day, confirmed via a
+player screenshot, then restored the same way.
+
+**Connection.** Player "Cafe Menu", XT245, serial URF4DT001627, BrightSignOS
+9.1.151, at 192.168.1.37 on the bAc Mac's *second* network interface (a USB
+ethernet adapter on 192.168.1.x — the Mac's main connection is a different
+subnet). Local DWS REST API on **HTTPS 443** with a self-signed cert
+(`verify=False` — see `brightsign_client.py`), digest auth, user `admin`,
+password set by the user when enabling DWS. The password is remembered
+in the macOS login Keychain (`app/credentials.py`), keyed by
+`username@ip`, and only after a push/listing it worked for — never in the
+repo or in `~/.cafe_menu_brightsign_player.json` (which holds IP/username/
+port only). It goes through `/usr/bin/security` on stdin, not a Python
+keyring library: Keychain ties items to the creating program, and
+`security` is stable across ad-hoc-signed rebuilds and source-vs-.app runs,
+so there's no "allow access?" prompt after every build. It's per macOS
+user account. "Clear IP" / "Clear password" in the Push dialog forget them. Found via Bonjour: `dns-sd -B _http._tcp local`.
+
+**How a bAc-published player finds each day's image** (read off the real
+player — `player_push.py`'s docstring has the details):
+- `sd/local-sync.json` — manifest bAc writes on Publish; `files.download`
+  maps each file *name* to `pool/<h[-2]>/<h[-1]>/sha1-<h>`, where `h` is the
+  SHA1 of the file's raw bytes (verified against a real pool file).
+- `autoplay-Cafe Menu <Day>.json` — each day's presentation, itself a pool
+  file; refers to its image only by `"fileName"`.
+- No signature on the manifest; the player re-reads it at boot.
+
+So a push = upload each new PNG into the pool under its SHA1 → repoint that
+day's image *name* in the manifest (hash/link/size only; the name stays, so
+the presentation still finds it) → verify → `PUT /api/v1/control/reboot`.
+The day's image name is found by reading the day's published presentation,
+not by guessing from file names. Reboot took ~25s on the real player.
+
+**Safety ordering** (all covered by an offline test using the real
+manifest): every selected day is resolved before anything is written; the
+manifest is backed up to `~/.cafe_menu_player_backups/` first; new pool
+files are harmless until referenced; the manifest is swapped last and
+read back — if it doesn't verify, the original is re-uploaded and the
+player is *not* rebooted. Days whose image hash is unchanged are skipped,
+and if nothing changed there's no reboot at all (renders are deterministic —
+re-rendering the published week produced byte-identical PNGs).
+
+**Quirks found the hard way:**
+- `PUT /api/v1/files/sd/<dir>` into a folder that doesn't exist yet only
+  **creates the folder** and still returns `success: true` — no file is
+  written. `Player.upload()` therefore reads back and SHA1-checks every
+  upload and retries once.
+- `POST /api/v1/snapshot` returns only a thumbnail; the full 3840×600
+  image is saved on the player at `sd/remote_snapshots/…` and read back.
+- File reads are `GET /api/v1/files/sd/<path>?contents` → base64 in
+  `data.result.contents`. Listings: entries have `type` ("file"/"dir") and
+  `stat.size` — *not* the `mime`/`size` player-cli implied.
+- In zsh, a shell loop variable named `path` clobbers `PATH` (it's tied
+  to it) — "command not found: curl" while debugging this was that.
+
+**Wrong-week guard (2026-09-24).** The first real pushes shipped this
+week's menu with *next* week's dates — the Starting Monday defaults to the
+upcoming Monday, and on Thursday Sept 24 the live sign showed "Thursday,
+October 1" (in the alt design, which was also still selected). Every image
+was exactly what the settings asked for; nothing in the push path was
+wrong. So `player_push.date_mismatches()` now compares each sign's date
+with the date the player will next show that weekday (today if it's that
+weekday — the schedule recurs forever, so that's the only week a pushed
+image can land in), and the confirmation becomes a warning defaulting to
+"No". Days of the current week that have already aired are deliberately
+*not* flagged: re-sending Monday–Wednesday on a Thursday is harmless, and
+warning on every correct mid-week push would train people to click past
+it.
+
+**Shared images.** A day's image is found by name and a name maps to one
+pool file, so if two days' presentations ever show the same file,
+`plan()` refuses to push one without the other (or to give them different
+signs). bAc lists a shared file once per presentation — the real manifest
+has the clock widget 5 times — so every copy of an entry is updated.
+
+**Interaction with bAc.** Nothing here touches the presentations or the
+schedule. The next Publish from bAc overwrites `local-sync.json` with
+whatever its `.bpfx` files point at, so keep running "Update This Week's
+Presentations" as well — then both paths agree. Old pool files are left
+behind; bAc's next Publish cleans up the pool.
 
 ## Auto-generated schedule (.bpsx) — the pivot that actually shipped
 
@@ -657,9 +780,10 @@ pattern as everything else in this project's BrightSign integration.
 
 ## Known non-goals / intentionally out of scope
 
-- Fully automated network calls of any kind — the whole point is offline
-  operation. Don't add telemetry, auto-update checks, or font/browser
-  downloads at runtime.
+- Internet access of any kind — the whole point is offline operation.
+  Don't add telemetry, auto-update checks, or font/browser downloads at
+  runtime. The one deliberate exception is LAN traffic to the cafe's own
+  BrightSign player, only when the user pushes to or browses it.
 - Notarization/proper Apple code signing — ad-hoc signing + quarantine
   clearing is the accepted tradeoff for an internal single-cafe tool.
 - Generic/reusable BrightSign instructions — the panel is deliberately

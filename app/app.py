@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -39,22 +40,63 @@ from renderer import render_days, render_preview_png_bytes, RenderValidationErro
 import brightsign_client
 import bpsx_schedule
 import bpfx_update
+import credentials
+import player_push
 
 PREVIEW_W = 760
 
-# Fixed light palette, applied regardless of macOS's system appearance.
-# Tkinter's native (Aqua) widgets don't reliably re-theme for dark mode —
-# labels/status text were rendering as dark-on-dark. Forcing a 'clam' ttk
-# theme with explicit colors, plus explicit colors on the plain tk widgets,
-# keeps contrast readable no matter what the OS is set to.
-BG = "#faf7f2"
-PANEL_BG = "#f1ece2"
-FG = "#2b1d16"
-MUTED_FG = "#6b5c50"
-GOOD_FG = "#2f7a3d"
-BAD_FG = "#b3392c"
-ACCENT = "#6b2f20"
-ACCENT_FG = "#faf7f2"
+# Light and dark palettes, matched to macOS's appearance setting at launch
+# and switched live if it changes while the app is open (App._watch_appearance).
+# Tkinter's native (Aqua) widgets don't reliably re-theme themselves —
+# labels/status text once rendered dark-on-dark — so the app never relies on
+# them: a 'clam' ttk theme with explicit colors, plus explicit colors on every
+# plain tk widget, drawn from whichever palette is active.
+#
+# Palette values are read when each widget is created, so always use these
+# names (BG, FG, …), never literal colors. The live switch works by finding
+# every widget option still set to an old palette color and swapping in the
+# new one, keyed by role: background-type options only ever hold the
+# *_BG/ACCENT colors and foreground-type options only the *_FG colors. So
+# within one palette, the background colors must all differ from each other
+# and so must the foreground colors (light BG and ACCENT_FG may match — one
+# is only ever a background, the other only ever a foreground).
+LIGHT_PALETTE = dict(
+    BG="#faf7f2", PANEL_BG="#f1ece2", ACCENT="#6b2f20",
+    FG="#2b1d16", MUTED_FG="#6b5c50", GOOD_FG="#2f7a3d", BAD_FG="#b3392c", ACCENT_FG="#faf7f2",
+    # ttk-only (set through styles, never on plain widgets)
+    ACCENT_ACTIVE="#82412e", DISABLED_BG="#d9d1c7", DISABLED_FG="#6e6156",
+    SCROLL_THUMB="#ddd4c8",
+)
+DARK_PALETTE = dict(
+    BG="#1e1814", PANEL_BG="#2a221d", ACCENT="#8e3f2b",
+    FG="#f2ebe3", MUTED_FG="#b3a597", GOOD_FG="#7ccf8c", BAD_FG="#ff8a7a", ACCENT_FG="#fbf6ef",
+    ACCENT_ACTIVE="#a24a33", DISABLED_BG="#3b322c", DISABLED_FG="#8c8076",
+    SCROLL_THUMB="#4a3f37",
+)
+BG_ROLE = ("BG", "PANEL_BG", "ACCENT")
+FG_ROLE = ("FG", "MUTED_FG", "GOOD_FG", "BAD_FG", "ACCENT_FG")
+BG_OPTIONS = ("background", "activebackground", "highlightbackground")
+FG_OPTIONS = ("foreground", "activeforeground", "insertbackground")
+
+BG = PANEL_BG = FG = MUTED_FG = GOOD_FG = BAD_FG = ACCENT = ACCENT_FG = ""  # set by _use_palette
+_palette: dict = {}
+
+
+def _use_palette(palette: dict) -> None:
+    """Makes `palette` the one new widgets are created with."""
+    global _palette
+    _palette = palette
+    globals().update({k: palette[k] for k in BG_ROLE + FG_ROLE})
+
+
+def _system_is_dark(root: Tk) -> bool:
+    try:
+        return bool(int(root.tk.call("::tk::unsupported::MacWindowStyle", "isdark", root)))
+    except Exception:
+        return False  # not macOS, or a Tk too old to say — stay light
+
+
+_use_palette(LIGHT_PALETTE)
 
 INSTRUCTIONS_TEXT = """HOW TO COOK UP MENU SIGNS, STEP BY STEP
 
@@ -100,39 +142,72 @@ INSTRUCTIONS_TEXT = """HOW TO COOK UP MENU SIGNS, STEP BY STEP
    buttons act on) stays as it was. The buttons are greyed out while a
    preview, export, or update is cooking.
 
-5. Update This Week's Presentations…
-   Check off which days should get this week's new image (all 5 checked
-   by default — uncheck a day if it hasn't aired yet and shouldn't be
-   overwritten early, e.g. Friday, if next week's menu showed up before
-   this week's Friday has played), then point this at the shared
-   Brightsign folder (the one with the five "Cafe Menu <Day>.bpfx" files
-   in it). This renders the checked days' 3840×600px signs and rewrites
-   each one's brightAuthor:connected presentation to show them — no
-   manual drag-and-drop needed. Then in brightAuthor:connected, just hit
-   Publish.
+5. Push to Player…  (the weekly step)
+   Plug in the orange ethernet cable, then click "Push to Player…".
+   Check off which days should get this week's new image (all 5 by
+   default — uncheck a day if it hasn't aired yet and shouldn't be
+   overwritten early, e.g. Friday, if next week's menu shows up before
+   this week's Friday has played). The player's IP and password are
+   filled in for you after the first push that works: the IP is
+   remembered by the app, the password in this Mac's Keychain. "Clear
+   IP" / "Clear password" forget them. Confirm, and the app sends the
+   signs straight to the BrightSign player and restarts it — the sign
+   goes blank for about 30 seconds — then shows a screenshot of what
+   it's displaying. Days whose image hasn't changed are skipped, and if
+   nothing changed the player isn't restarted at all. That's it — no
+   brightAuthor:connected needed week to week.
+
+   Double-check the Starting Monday date first — it defaults to the
+   *upcoming* Monday, so pushing this week's menu mid-week needs it set
+   back to this week. If any sign is dated for a different week than the
+   one the player will show it in (e.g. a Thursday sign dated October 1
+   pushed on Thursday September 24), the confirmation turns into a
+   warning listing them, with "No" as the default.
 
    If any label or item text is too long and would wrap to a second
    line on the sign, or a day has so many rows that the bottom would be
    cut off, this gets sent back to the kitchen (blocked) with an error
    telling you which day and what's wrong — fix the source document and
-   re-parse rather than shipping a half-baked layout. If any selected
-   day's presentation file is missing or unreadable, nothing is changed
-   for any day, so you never end up with a half-updated week.
-
-   See "Recipe (Instructions)" in the Help menu for the full weekly
-   walkthrough, including the one-time schedule setup.
+   re-parse rather than shipping a half-baked layout. Nothing is sent to
+   the player unless every checked day is ready to go, so you never end
+   up with a half-updated week.
 
 "Plate It Up (Export PNGs)…" lets you check off which days to export,
    then saves those PNGs to a folder of your choice, without touching
-   any presentation — useful if you just want the images themselves.
+   the player or any presentation — useful if you just want the images.
 
-Advanced menu (rarely needed):
-   "Generate Schedule (.bpsx)…" is a one-time setup step; once each
-   weekday's schedule entry is created to recur forever, you never
-   need to run it again.
+────────────────────────────────────────────────────────────────
+BRIGHTAUTHOR:CONNECTED — one-time setup, and the old way
+────────────────────────────────────────────────────────────────
 
-This app makes no network connections — everything (fonts, rendering
-engine) is bundled inside the app. Fully homemade, nothing delivered.
+One-time setup (already done for the cafe's player — only needed again
+if the player is replaced or reset):
+   • The five "Cafe Menu <Day>.bpfx" presentations must be Published
+     from brightAuthor:connected once. Push to Player swaps the images
+     inside those published presentations, so they have to be on the
+     player first.
+   • Advanced → "Generate Schedule (.bpsx)… [one-time setup]" makes the
+     schedule that shows each weekday's presentation. Every entry
+     recurs forever, so this never needs running again. Open the saved
+     file in brightAuthor:connected (File → Open, switch the file-type
+     filter to Schedule), then Publish.
+
+"Update This Week's Presentations…" — the old weekly way, before Push
+   to Player. Check off the days, point it at the shared Brightsign
+   folder (the one with the five "Cafe Menu <Day>.bpfx" files), and it
+   rewrites each presentation to show the new signs. Then Publish from
+   brightAuthor:connected.
+
+   ⚠ Whenever you Publish from brightAuthor:connected for any reason,
+   run "Update This Week's Presentations…" for the current week first.
+   A Publish sends whatever images the .bpfx files point at — if the
+   week's menu only went out by Push to Player, the .bpfx files still
+   point at an older week, and a Publish would put those back on the
+   sign.
+
+The app never uses the internet — fonts and the rendering engine are
+bundled inside it. The only network traffic is to the BrightSign player
+on the local network, and only when you push to it or browse its files.
 """
 
 
@@ -168,55 +243,74 @@ BRIGHTSIGN_IMG_W = 640
 # process (dragging PNGs into the Content tab, dragging presentations onto
 # the Schedule calendar) is gone; the app does both of those now.
 BRIGHTSIGN_STEPS = [
-    (
-        "One-time setup — only needed once, ever",
-        "Skip this if the schedule's already set up. From the Advanced "
-        'menu: "Generate Schedule (.bpsx)… [one-time setup]" (after a '
-        "preview). Pick the days, one shared start/end time, and the "
-        "shared Brightsign folder (the one with the five "
-        '"Cafe Menu <Day>.bpfx" files in it), then save the file. In '
-        "brightAuthor:connected: File → Open, switch the file-type "
-        "filter to Schedule, open that file, then Publish.\n\n"
-        "Each weekday's schedule entry recurs every week, forever — you "
-        "will not need to touch scheduling again after this.",
-        "03_schedule_empty.png",
-    ),
+    # (heading, body, screenshot) — or (heading, None, None) for a section title.
+    ("Every week", None, None),
     (
         "1. Get the ingredients ready",
         'Open "The Cafe Menu Sign Generator", pick this week\'s .docx, and '
-        'Whip Up a Preview (see Chef\'s Instructions if you haven\'t yet).',
+        'Whip Up a Preview. Check every day looks right (see Chef\'s '
+        "Instructions if you haven't yet).",
         None,
     ),
     (
-        "2. Update this week's presentations",
-        'Click "Update This Week\'s Presentations…", check off which days '
-        "should get this week's new image, and point it at the shared "
-        'Brightsign folder (the one with the five "Cafe Menu <Day>.bpfx" '
-        "files in it). This renders those days' signs and rewrites each "
-        "one's presentation to show them — no dragging PNGs around by "
-        "hand.\n\n"
-        "There's still only one Friday presentation, shared by every week "
-        "(the schedule can't tell \"this Friday\" from \"next Friday\" — "
-        "it's the same recurring block). If next week's menu shows up "
-        "before this week's Friday has aired, leave Friday unchecked for "
-        "now and update it once this week's Friday has actually played — "
-        "otherwise you'd overwrite it early.",
+        "2. Plug in",
+        "Plug in the orange ethernet cable at James's desk — that's how the "
+        "laptop reaches the player.",
         None,
     ),
     (
-        "3. Preheat brightAuthor:connected",
+        "3. Push to Player — order up",
+        'Click "Push to Player…" and check off which days should get this '
+        "week's new image. The player's IP and password fill themselves in "
+        "after the first push that works. Click Push and confirm: the sign "
+        "goes blank for about 30 seconds while the player restarts, then "
+        "the app shows a screenshot of what's on screen. Done.\n\n"
+        "There's only one Friday presentation, shared by every week (the "
+        "schedule can't tell \"this Friday\" from \"next Friday\"). If next "
+        "week's menu shows up before this week's Friday has aired, leave "
+        "Friday unchecked for now and push it once this week's Friday has "
+        "actually played — otherwise you'd overwrite it early.",
+        None,
+    ),
+    ("brightAuthor:connected — one-time setup, and the old way", None, None),
+    (
+        "One-time setup (already done — only if the player is replaced or reset)",
+        "Push to Player swaps the images inside the presentations already "
+        "on the player, so those need to be published once first:\n\n"
+        '• Publish the five "Cafe Menu <Day>.bpfx" presentations from '
+        "brightAuthor:connected (see the Publish step below).\n"
+        '• From the Advanced menu, "Generate Schedule (.bpsx)… [one-time '
+        'setup]" (after a preview). Pick the days, one shared start/end '
+        'time, and the shared Brightsign folder (the one with the five '
+        '"Cafe Menu <Day>.bpfx" files in it), then save. In '
+        "brightAuthor:connected: File → Open, switch the file-type filter "
+        "to Schedule, open that file, then Publish. Each weekday's entry "
+        "recurs every week, forever.",
+        "03_schedule_empty.png",
+    ),
+    (
+        "Before any Publish: update the presentations",
+        'Click "Update This Week\'s Presentations…", check off the days, and '
+        "point it at the shared Brightsign folder. This rewrites each "
+        "day's presentation to show this week's signs.\n\n"
+        "Always do this before publishing from brightAuthor:connected, for "
+        "any reason — a Publish sends whatever images the presentations "
+        "point at, and if this week only went out by Push to Player, they "
+        "still point at an older week.",
+        None,
+    ),
+    (
+        "Open brightAuthor:connected",
         "On the MacBook Air, open brightAuthor:connected (the purple \"bA "
-        "connected\" icon). This is the oven the signs actually get baked "
-        "into.",
+        "connected\" icon).",
         "01_open_baconnected.png",
     ),
     (
-        "4. Fire it and send it out",
-        "Plug in the orange ethernet cable at James's desk. In the "
-        "Destination panel, click the refresh icon above Networked "
-        'Players, then check the box next to the player named "Cafe '
-        'Menu-…" (it\'s the only one on the list). Click Publish (top '
-        "right) — order up, it's on the screen.",
+        "Publish",
+        "With the orange ethernet cable plugged in: in the Destination "
+        "panel, click the refresh icon above Networked Players, then check "
+        'the box next to the player named "Cafe Menu-…" (it\'s the only one '
+        "on the list). Click Publish (top right).",
         "05_publish.png",
     ),
 ]
@@ -248,11 +342,17 @@ def show_brightsign_instructions(root: Tk):
     win._images = []  # keep PhotoImage refs alive for the life of the window
 
     for heading, body, img_name in BRIGHTSIGN_STEPS:
-        if heading:
+        if body is None:
             Label(
-                content, text=heading, bg=BG, fg=FG, font=("", 13, "bold"),
+                content, text=heading, bg=BG, fg=MUTED_FG, font=("", 16, "bold"),
                 anchor="w", justify="left", wraplength=700,
-            ).pack(fill="x", padx=8, pady=(16, 2))
+            ).pack(fill="x", padx=8, pady=(26, 0))
+            Frame(content, bg=ACCENT, height=2).pack(fill="x", padx=8, pady=(4, 0))
+            continue
+        Label(
+            content, text=heading, bg=BG, fg=FG, font=("", 13, "bold"),
+            anchor="w", justify="left", wraplength=700,
+        ).pack(fill="x", padx=8, pady=(16, 2))
         Label(
             content, text=body, bg=BG, fg=FG, anchor="w", justify="left", wraplength=700,
         ).pack(fill="x", padx=8, pady=(0, 6))
@@ -286,25 +386,21 @@ def _load_player_config() -> dict:
     return {}
 
 
-def _save_player_config(ip: str, port: str, username: str, storage: str) -> None:
-    # Deliberately never saves the password — it's the player's serial
-    # number and this file isn't meant to be a credential store. IP, port,
-    # username, and storage are low-stakes convenience only.
+def _save_player_config(**fields: str) -> None:
+    """Merges `fields` (any of ip, port, username, storage) into the saved
+    config, keeping whatever else is already there. Deliberately never saves
+    the password — this file isn't meant to be a credential store. IP, port,
+    username, and storage are low-stakes convenience only."""
     import json
-    PLAYER_CONFIG_PATH.write_text(json.dumps({"ip": ip, "port": port, "username": username, "storage": storage}))
+    cfg = _load_player_config()
+    cfg.update(fields)
+    PLAYER_CONFIG_PATH.write_text(json.dumps(cfg))
 
 
 def show_player_browser(root: Tk):
-    """Read-only file browser against a BrightSign player's Local DWS.
-
-    This exists to answer one open question before any direct-upload
-    feature gets built: does a presentation's zone read its image from a
-    fixed, predictable filename on the player (which a future "push this
-    week's PNGs directly to the player" button could safely overwrite), or
-    does brightAuthor:connected rename/rehash the asset on every Publish
-    (which would make a blind overwrite silently do nothing, or worse,
-    clobber the wrong file)? This panel only ever does GET requests —
-    nothing here can change what's on the player or what's on screen.
+    """Read-only file browser against a BrightSign player's Local DWS —
+    a troubleshooting aid for "Push to Player". This panel only ever does
+    GET requests; nothing here can change what's on the player or on screen.
     """
     cfg = _load_player_config()
 
@@ -314,9 +410,8 @@ def show_player_browser(root: Tk):
 
     Label(
         win,
-        text="Look around the player's storage to find the exact file each day's "
-             "menu zone reads from. This only reads — nothing here can change "
-             "what's showing on the screen.",
+        text="Look around the player's storage (for troubleshooting). This only "
+             "reads — nothing here can change what's showing on the screen.",
         bg=BG, fg=MUTED_FG, wraplength=660, justify="left",
     ).pack(anchor="w", padx=16, pady=(14, 8))
 
@@ -330,11 +425,11 @@ def show_player_browser(root: Tk):
     )
 
     Label(form, text="Port:", bg=BG, fg=FG).grid(row=0, column=2, sticky="w", pady=3)
-    port_var = StringVar(value=cfg.get("port", "8080"))
+    port_var = StringVar(value=cfg.get("port", str(brightsign_client.DEFAULT_PORT)))
     Entry(form, textvariable=port_var, width=8, bg=PANEL_BG, fg=FG, insertbackground=FG, relief="flat").grid(
         row=0, column=3, sticky="w", padx=(6, 16)
     )
-    Label(form, text="(not always 80 — check by loading http://<ip>:<port> in a browser first)",
+    Label(form, text="(443 = HTTPS, which the cafe's player uses; 8080 is NOT the file API)",
           bg=BG, fg=MUTED_FG).grid(row=0, column=4, columnspan=2, sticky="w")
 
     Label(form, text="Username:", bg=BG, fg=FG).grid(row=1, column=0, sticky="w", pady=3)
@@ -344,11 +439,11 @@ def show_player_browser(root: Tk):
     )
 
     Label(form, text="Password:", bg=BG, fg=FG).grid(row=1, column=2, sticky="w", pady=3)
-    pass_var = StringVar(value="")
+    pass_var = StringVar(value=credentials.load(cfg.get("ip", ""), cfg.get("username", "admin")))
     Entry(form, textvariable=pass_var, width=18, bg=PANEL_BG, fg=FG, insertbackground=FG, relief="flat", show="•").grid(
         row=1, column=3, sticky="w", padx=(6, 16)
     )
-    Label(form, text="(not saved between sessions — try blank first, or the serial number)",
+    Label(form, text="(remembered in this Mac's Keychain once it works)",
           bg=BG, fg=MUTED_FG).grid(row=1, column=4, columnspan=2, sticky="w")
 
     Label(form, text="Storage:", bg=BG, fg=FG).grid(row=2, column=0, sticky="w", pady=3)
@@ -381,37 +476,35 @@ def show_player_browser(root: Tk):
             storage_var.get().strip() or "sd", path_var.get().strip(),
         )
         if not ip or not username:
-            messagebox.showwarning("Missing info", "Player IP and username are required.")
+            messagebox.showwarning("Missing info", "Player IP and username are required.", parent=win)
             return
         try:
-            port = int(port_str) if port_str else 80
+            port = int(port_str) if port_str else brightsign_client.DEFAULT_PORT
         except ValueError:
-            messagebox.showerror("Bad port", "Port must be a number (e.g. 80 or 8080).")
+            messagebox.showerror("Bad port", "Port must be a number (e.g. 443).", parent=win)
             return
         status_var.set(f"Listing {storage}/{path or '(root)'} on port {port} …")
         win.update_idletasks()
 
         def worker():
             # Everything below is wrapped in one broad try/except — not just
-            # for BrightSignError — because the real player's JSON response
-            # shape is only inferred from reading a reference CLI's source,
-            # never actually tested against real hardware until the user
-            # tries it. If that shape assumption is wrong (different key
-            # names, files as strings instead of dicts, etc.), formatting
-            # code below would raise an exception that, uncaught, silently
-            # kills this background thread and leaves the GUI's status text
-            # stuck forever on "Listing..." — which is exactly what happened
-            # once already. Showing the raw response on any failure here
-            # turns a silent hang into an actionable error and a way to see
-            # the real shape so this code can be corrected to match it.
+            # for BrightSignError — so that if a firmware update ever changes
+            # the response shape, the formatting code can't raise uncaught,
+            # silently kill this thread, and leave the status stuck forever
+            # on "Listing..." (which happened once, before the real shape was
+            # known). Any failure shows the raw response instead.
             try:
-                files = brightsign_client.list_files(ip, port, username, password, path=path, storage=storage)
-                _save_player_config(ip, port_str, username, storage)
+                player = brightsign_client.Player(ip, port, username, password, storage=storage)
+                files = player.list_files(path)
+                _save_player_config(ip=ip, port=port_str, username=username, storage=storage)
+                credentials.save(ip, username, password)
                 lines = []
-                for f in sorted(files, key=lambda x: (x.get("mime") != "directory", x.get("name", ""))):
-                    kind = "DIR " if f.get("mime") == "directory" else f.get("mime", "file")
-                    size = f.get("size", "")
-                    lines.append(f"{kind:>18}  {size!s:>10}  {f.get('name', '')}")
+                # "._name" entries are macOS resource-fork litter on the SD card.
+                files = [f for f in files if not f.get("name", "").startswith("._")]
+                for f in sorted(files, key=lambda x: (x.get("type") != "dir", x.get("name", ""))):
+                    kind = "DIR " if f.get("type") == "dir" else f.get("mime", "file")
+                    size = "" if f.get("type") == "dir" else f.get("stat", {}).get("size", "")
+                    lines.append(f"{kind:>24}  {size!s:>10}  {f.get('name', '')}")
                 result_text = "\n".join(lines) if lines else "(empty)"
                 status_text = f"{len(files)} item(s) at {storage}/{path or '(root)'}"
             except brightsign_client.BrightSignError as e:
@@ -452,13 +545,36 @@ def _next_monday(today: date) -> date:
     return today + timedelta(days=days_ahead) if today.weekday() != 0 else today
 
 
+def _recolor_tree(widget, old: dict, new: dict) -> None:
+    """Swaps every palette color set on `widget` and its descendants (open
+    dialogs included) from palette `old` to palette `new`, by role — see the
+    note above LIGHT_PALETTE."""
+    bg_map = {old[k].lower(): new[k] for k in BG_ROLE}
+    fg_map = {old[k].lower(): new[k] for k in FG_ROLE}
+    for options, mapping in ((BG_OPTIONS, bg_map), (FG_OPTIONS, fg_map)):
+        for opt in options:
+            try:
+                value = str(widget.cget(opt)).lower()
+            except Exception:
+                continue  # ttk widgets and some natives don't have this option
+            if value in mapping:
+                try:
+                    widget.configure(**{opt: mapping[value]})
+                except Exception:
+                    pass
+    for child in widget.winfo_children():
+        _recolor_tree(child, old, new)
+
+
 class App:
     def __init__(self, root: Tk):
         self.root = root
         root.title("The Cafe — Menu Sign Generator")
         root.geometry("900x700")
-        root.configure(bg=BG)
 
+        self._dark = _system_is_dark(root)
+        _use_palette(DARK_PALETTE if self._dark else LIGHT_PALETTE)
+        root.configure(bg=BG)
         self._setup_style()
 
         self.docx_path: str | None = None
@@ -471,20 +587,47 @@ class App:
 
         self._build_menu()
         self._build_ui()
+        self.root.after(2000, self._watch_appearance)
 
     def _setup_style(self):
         # 'clam' is a theme ttk fully draws itself (unlike 'aqua'), so our
         # explicit colors actually take effect instead of being overridden
         # by whatever the OS's light/dark appearance would otherwise force.
+        # Safe to call again: re-running it is how the live light/dark
+        # switch re-themes every ttk widget at once.
+        pal = _palette
         style = ttk.Style(self.root)
         style.theme_use("clam")
         style.configure("TFrame", background=BG)
         style.configure("TLabel", background=BG, foreground=FG)
-        style.configure("TButton", background=ACCENT, foreground=ACCENT_FG, padding=6, relief="flat")
-        style.map("TButton", background=[("active", "#82412e"), ("disabled", "#b8aca3")])
-        style.configure("TRadiobutton", background=BG, foreground=FG)
-        style.map("TRadiobutton", background=[("active", BG)])
-        style.configure("TScrollbar", background=PANEL_BG)
+        style.configure("TButton", background=ACCENT, foreground=ACCENT_FG, padding=6, relief="flat",
+                        bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT)
+        style.map("TButton",
+                  background=[("disabled", pal["DISABLED_BG"]), ("active", pal["ACCENT_ACTIVE"])],
+                  foreground=[("disabled", pal["DISABLED_FG"])],
+                  bordercolor=[("disabled", pal["DISABLED_BG"])],
+                  lightcolor=[("disabled", pal["DISABLED_BG"])],
+                  darkcolor=[("disabled", pal["DISABLED_BG"])])
+        for check_style in ("TRadiobutton", "TCheckbutton"):
+            style.configure(check_style, background=BG, foreground=FG,
+                            indicatorbackground=PANEL_BG, indicatorforeground=FG, upperbordercolor=MUTED_FG,
+                            lowerbordercolor=MUTED_FG)
+            style.map(check_style, background=[("active", BG)],
+                      indicatorbackground=[("pressed", PANEL_BG), ("selected", PANEL_BG)])
+        style.configure("TScrollbar", background=pal["SCROLL_THUMB"], troughcolor=BG, bordercolor=BG,
+                        arrowcolor=MUTED_FG, lightcolor=pal["SCROLL_THUMB"], darkcolor=pal["SCROLL_THUMB"])
+
+    def _watch_appearance(self):
+        """Polls macOS's appearance and re-themes the whole app (every open
+        window) when it flips between Light and Dark."""
+        dark = _system_is_dark(self.root)
+        if dark != self._dark:
+            self._dark = dark
+            old = _palette
+            _use_palette(DARK_PALETTE if dark else LIGHT_PALETTE)
+            self._setup_style()
+            _recolor_tree(self.root, old, _palette)
+        self.root.after(2000, self._watch_appearance)
 
     def _build_menu(self):
         menubar = Menu(self.root)
@@ -511,8 +654,8 @@ class App:
         Label(
             top,
             text="Recipe: pick the weekly .docx  →  confirm the Monday date  →  "
-                 "Whip Up a Preview  →  check for wrapping  →  Update This Week's "
-                 "Presentations. (Help menu has the full Chef's Instructions.)",
+                 "Whip Up a Preview  →  check it looks right  →  Push to Player. "
+                 "(Help menu has the full Chef's Instructions.)",
             bg=BG, fg=MUTED_FG, wraplength=820, justify="left",
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
@@ -570,6 +713,10 @@ class App:
             bottom, text="Plate It Up (Export PNGs)…", command=self.export, state="disabled"
         )
         self.export_btn.pack(side="left", padx=(10, 0))
+        self.push_btn = ttk.Button(
+            bottom, text="Push to Player…", command=self.push_to_player, state="disabled"
+        )
+        self.push_btn.pack(side="left", padx=(10, 0))
         ttk.Button(
             bottom, text="Recipe (Instructions)", command=lambda: show_brightsign_instructions(self.root)
         ).pack(side="left", padx=(10, 0))
@@ -656,6 +803,7 @@ class App:
         self.advanced_menu.entryconfig(0, state=actions_state)
         self.export_btn.config(state=actions_state)
         self.update_presentations_btn.config(state=actions_state)
+        self.push_btn.config(state=actions_state)
 
     def _show_previews(self, new_days: list[DayMenu], previews: list[tuple[DayMenu, bytes]]):
         for widget in self.preview_frame.winfo_children():
@@ -724,13 +872,13 @@ class App:
         def do_generate():
             selected = [(day.day_name, day.menu_date) for day in days if day_vars[day.day_name].get()]
             if not selected:
-                messagebox.showwarning("Missing info", "Pick at least one day.")
+                messagebox.showwarning("Missing info", "Pick at least one day.", parent=win)
                 return
             try:
                 start = datetime.strptime(start_var.get().strip(), "%H:%M").time()
                 end = datetime.strptime(end_var.get().strip(), "%H:%M").time()
             except ValueError:
-                messagebox.showerror("Bad time", "Start/End must be in 24-hour HH:MM format (e.g. 06:00).")
+                messagebox.showerror("Bad time", "Start/End must be in 24-hour HH:MM format (e.g. 06:00).", parent=win)
                 return
 
             bpfx_dir_str = filedialog.askdirectory(
@@ -779,7 +927,7 @@ class App:
 
         win = Toplevel(self.root, bg=BG)
         win.title("Update This Week's Presentations")
-        win.geometry("420x300")
+        win.geometry("420x340")
 
         Label(
             win,
@@ -808,11 +956,11 @@ class App:
 
         def do_update():
             if self._busy:
-                messagebox.showwarning("Still Cooking", "Wait for the current job to finish first.")
+                messagebox.showwarning("Still Cooking", "Wait for the current job to finish first.", parent=win)
                 return
             selected_days = [day for day in days if day_vars[day.day_name].get()]
             if not selected_days:
-                messagebox.showwarning("Missing info", "Pick at least one day.")
+                messagebox.showwarning("Missing info", "Pick at least one day.", parent=win)
                 return
 
             bpfx_dir_str = filedialog.askdirectory(
@@ -900,11 +1048,11 @@ class App:
 
         def do_export():
             if self._busy:
-                messagebox.showwarning("Still Cooking", "Wait for the current job to finish first.")
+                messagebox.showwarning("Still Cooking", "Wait for the current job to finish first.", parent=win)
                 return
             selected_days = [day for day in days if day_vars[day.day_name].get()]
             if not selected_days:
-                messagebox.showwarning("Missing info", "Pick at least one day.")
+                messagebox.showwarning("Missing info", "Pick at least one day.", parent=win)
                 return
 
             out_dir = filedialog.askdirectory(title="Choose a folder to plate the PNGs into")
@@ -955,6 +1103,203 @@ class App:
                     self._set_busy(False),
                 ),
             )
+
+    def push_to_player(self):
+        if not self.days:
+            return
+        cfg = _load_player_config()
+
+        win = Toplevel(self.root, bg=BG)
+        win.title("Push to Player")
+        win.geometry("480x580")
+
+        Label(
+            win, text="Which days should the player get this week's image for?",
+            bg=BG, fg=FG, font=("", 12, "bold"), anchor="w", wraplength=420, justify="left",
+        ).pack(anchor="w", padx=16, pady=(16, 2))
+        Label(
+            win,
+            text="Sends the signs straight to the BrightSign player — no "
+                 "brightAuthor:connected Publish needed. Leave a day unchecked if "
+                 "it hasn't aired yet and shouldn't be overwritten early. The sign "
+                 "goes blank for about 30 seconds while the player restarts.",
+            bg=BG, fg=MUTED_FG, wraplength=420, justify="left",
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+
+        days = self.days  # snapshot; see update_presentations
+        day_vars: dict[str, BooleanVar] = {}
+        for day in days:
+            label = f"{day.day_name} — {format_month_day(day.menu_date)}"
+            if day.closed:
+                label += "  (Closed)"
+            var = BooleanVar(value=True)
+            day_vars[day.day_name] = var
+            ttk.Checkbutton(win, text=label, variable=var).pack(anchor="w", padx=24, pady=2)
+
+        form = Frame(win, bg=BG)
+        form.pack(anchor="w", padx=16, pady=(14, 0))
+        saved_ip, saved_user = cfg.get("ip", ""), cfg.get("username") or "admin"
+        fields = [
+            ("Player IP:", StringVar(value=saved_ip), {}),
+            ("Username:", StringVar(value=saved_user), {}),
+            ("Password:", StringVar(value=credentials.load(saved_ip, saved_user)), {"show": "•"}),
+        ]
+        for row, (text, var, extra) in enumerate(fields):
+            Label(form, text=text, bg=BG, fg=FG).grid(row=row, column=0, sticky="w", pady=3)
+            Entry(form, textvariable=var, width=22, bg=PANEL_BG, fg=FG, insertbackground=FG,
+                  relief="flat", **extra).grid(row=row, column=1, sticky="w", padx=(6, 0))
+        ip_var, user_var, pass_var = (f[1] for f in fields)
+        Label(
+            form, text="The password is remembered in this Mac's Keychain (never in the "
+                       "app's files) once a push with it works.",
+            bg=BG, fg=MUTED_FG, wraplength=420, justify="left",
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+        def clear_ip():
+            ip_var.set("")
+            _save_player_config(ip="")
+
+        def clear_password():
+            # Forget it for whichever player the dialog is pointed at, falling
+            # back to the saved one if the IP field was already cleared.
+            credentials.clear(ip_var.get().strip() or saved_ip, user_var.get().strip() or saved_user)
+            pass_var.set("")
+
+        ttk.Button(form, text="Clear IP", command=clear_ip).grid(row=0, column=2, sticky="w", padx=6)
+        ttk.Button(form, text="Clear password", command=clear_password).grid(row=2, column=2, sticky="w", padx=6)
+
+        def do_push():
+            if self._busy:
+                messagebox.showwarning("Still Cooking", "Wait for the current job to finish first.", parent=win)
+                return
+            selected_days = [day for day in days if day_vars[day.day_name].get()]
+            if not selected_days:
+                messagebox.showwarning("Missing info", "Pick at least one day.", parent=win)
+                return
+            ip, username, password = ip_var.get().strip(), user_var.get().strip(), pass_var.get()
+            if not ip or not username:
+                messagebox.showwarning("Missing info", "Player IP and username are required.", parent=win)
+                return
+            # Remember the IP as soon as it's entered, even if this push
+            # fails (a wrong password shouldn't make you retype the IP).
+            _save_player_config(ip=ip, username=username)
+            names = ", ".join(d.day_name for d in selected_days)
+            blank_note = "The sign will go blank for about 30 seconds while the player restarts."
+            today = date.today()
+            mismatches = player_push.date_mismatches({d.day_name: d.menu_date for d in selected_days}, today)
+            if mismatches:
+                lines = "\n".join(
+                    f"• {day}'s sign says {format_month_day(sign)}, but the player will show it "
+                    f"{'today' if shown == today else 'next'} on {format_month_day(shown)}."
+                    for day, sign, shown in mismatches
+                )
+                confirmed = messagebox.askyesno(
+                    "Wrong Week on the Menu?",
+                    f"These signs are dated for a different week than the one they'll be shown in:\n\n"
+                    f"{lines}\n\nCheck the Starting Monday date, or uncheck days that haven't "
+                    f"aired yet.\n\nPush {names} anyway? {blank_note}",
+                    icon="warning", default="no", parent=win,
+                )
+            else:
+                confirmed = messagebox.askyesno(
+                    "Send It to the Pass?", f"Push {names} to the player at {ip}?\n\n{blank_note}", parent=win,
+                )
+            if not confirmed:
+                return
+            port = brightsign_client.DEFAULT_PORT
+            win.destroy()
+            self.status_label.config(text="Sending the specials to the player…", fg=MUTED_FG)
+            self._set_busy(True)
+            self.root.update_idletasks()
+            player = brightsign_client.Player(ip, port, username, password)
+            threading.Thread(
+                target=self._push_thread,
+                args=(player, selected_days, self.variant.get(),
+                      lambda: credentials.save(ip, username, password)),
+                daemon=True,
+            ).start()
+
+        ttk.Button(win, text="Push", command=do_push).pack(pady=(16, 12))
+
+    def _push_thread(self, player, selected_days: list[DayMenu], variant: str, remember_password):
+        def progress(msg: str):
+            self.root.after(0, lambda: self.status_label.config(text=msg, fg=MUTED_FG))
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                progress("Rendering the signs…")
+                results = render_days(selected_days, Path(tmp), variant=variant, strict=True)
+                day_to_png = {r.day_name: r.png_path for r in results}
+                changes, backup = player_push.push(player, day_to_png, progress=progress)
+            # Only now — the player has accepted this password — is it worth
+            # remembering. A typo never gets saved.
+            remember_password()
+            sent = [c.day_name for c in changes if not c.unchanged]
+            same = [c.day_name for c in changes if c.unchanged]
+            snapshot = None
+            if sent:
+                progress("Waiting for the sign to come back up…")
+                time.sleep(30)  # let the presentation start before screenshotting
+                try:
+                    snapshot = player.snapshot()
+                except brightsign_client.BrightSignError:
+                    snapshot = None  # screenshot is a nice-to-have; the push itself worked
+            lines = []
+            if sent:
+                lines.append(f"Pushed to the player: {', '.join(sent)}.")
+            if same:
+                lines.append(f"Already up to date (not re-sent): {', '.join(same)}.")
+            lines.append(f"\nA copy of the player's previous content list was saved to:\n{backup}")
+            summary = "\n".join(lines)
+            self.root.after(0, lambda: self._push_done(summary, snapshot, bool(sent)))
+        except (RenderValidationError, player_push.PlayerPushError, brightsign_client.BrightSignError) as e:
+            msg = str(e)  # `e` is unbound once this block exits; see do_list
+            self.root.after(
+                0,
+                lambda: (
+                    messagebox.showerror("86'd — Push Didn't Go Out", msg),
+                    self.status_label.config(text="Push didn't make it out of the kitchen.", fg=BAD_FG),
+                    self._set_busy(False),
+                ),
+            )
+        except Exception as e:
+            err = f"{e}\n\n{traceback.format_exc()}"
+            self.root.after(
+                0,
+                lambda: (
+                    messagebox.showerror("Kitchen Fire", err),
+                    self.status_label.config(text="Push didn't make it out of the kitchen.", fg=BAD_FG),
+                    self._set_busy(False),
+                ),
+            )
+
+    def _push_done(self, summary: str, snapshot: bytes | None, sent_any: bool):
+        self.status_label.config(
+            text="Order up — the player has this week's specials." if sent_any
+            else "The player already had these signs — nothing needed sending.",
+            fg=GOOD_FG,
+        )
+        self._set_busy(False)
+
+        win = Toplevel(self.root, bg=BG)
+        win.title("Order Up!")
+        Label(win, text=summary, bg=BG, fg=FG, justify="left", anchor="w", wraplength=740).pack(
+            anchor="w", padx=16, pady=(14, 8)
+        )
+        tk_img = None
+        if snapshot:
+            try:
+                img = Image.open(io.BytesIO(snapshot))
+                scale = PREVIEW_W / img.width
+                tk_img = ImageTk.PhotoImage(img.resize((PREVIEW_W, int(img.height * scale)), Image.LANCZOS))
+            except Exception:
+                tk_img = None  # a garbled screenshot shouldn't hide that the push worked
+        if tk_img:
+            Label(win, text="What the sign is showing right now:", bg=BG, fg=MUTED_FG).pack(anchor="w", padx=16)
+            win._image = tk_img  # keep the PhotoImage alive for the window's lifetime
+            Label(win, image=tk_img, bg=BG, relief="solid", borderwidth=1).pack(padx=16, pady=(4, 8))
+        Button(win, text="Close", command=win.destroy, bg=ACCENT, fg=ACCENT_FG,
+               activebackground=ACCENT, activeforeground=ACCENT_FG, relief="flat").pack(pady=(0, 12))
 
 
 def main():

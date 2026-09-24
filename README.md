@@ -2,8 +2,9 @@
 
 Offline macOS app that turns a weekly lunch menu `.docx` into five
 3840×600px digital-signage PNGs (Monday–Friday), and pushes them straight
-onto a BrightSign-driven display through brightAuthor:connected — no
-manual drag-and-drop, no internet connection required.
+onto a BrightSign-driven display — directly over the local network, or
+through brightAuthor:connected — no manual drag-and-drop, no internet
+connection required.
 
 Built for one specific cafe's workflow (a BrightSign player driving an
 86" ultra-wide panel), but the pipeline — docx parsing → HTML/CSS
@@ -24,7 +25,10 @@ chore into a one-click tool.
    downsampled) matching a fixed maroon digital-signage design, with a
    pre-export check that blocks the export if any text would wrap or a
    day's rows wouldn't fit in the sign's height.
-3. **Publishes to BrightSign** two ways:
+3. **Publishes to BrightSign** three ways:
+   - **Push to Player** — sends the new PNGs straight to the player over
+     its Local DWS API (HTTPS on the local network) and restarts it, no
+     brightAuthor:connected Publish needed.
    - Generates brightAuthor:connected's native schedule file (`.bpsx`)
      from scratch, with each weekday set to recur forever — a one-time
      setup, never repeated.
@@ -32,8 +36,10 @@ chore into a one-click tool.
      point at that week's new PNG — the actual weekly task, done with one
      click instead of five manual drag-and-drops in brightAuthor:connected.
 
-Everything runs with **zero network calls** — fonts and the Chromium
-rendering engine are bundled inside the packaged `.app`.
+Nothing uses the internet — fonts and the Chromium rendering engine are
+bundled inside the packaged `.app`. The only network traffic is to the
+BrightSign player on the local network, when you push to it or browse
+its files.
 
 ## System requirements
 
@@ -58,9 +64,10 @@ rendering engine are bundled inside the packaged `.app`.
   format, macOS bundle layout for Chromium) — a Windows/Linux build would
   need its own packaging script.
 - Python 3.11+
-- [brightAuthor:connected](https://www.brightsign.biz/) for the actual
-  publish-to-player step (not automated — this app prepares the files
-  bAc consumes)
+- [brightAuthor:connected](https://www.brightsign.biz/) to set up and
+  first-publish the presentations; after that, weekly updates can go
+  straight to the player with Push to Player (needs the player's Local
+  DWS enabled)
 
 ## Setup (run from source)
 
@@ -89,8 +96,8 @@ Apple.
 
 Produces `dist/The Cafe Menu Sign Generator.app` — a double-clickable app
 with the Libre Franklin fonts, Chromium, and the BrightSign help
-screenshots all bundled inside (~700MB, mostly Chromium). No network
-access is used at runtime.
+screenshots all bundled inside (~700MB, mostly Chromium). No internet
+access is used at runtime (only the local BrightSign player, on request).
 
 First launch: since the app is only ad-hoc signed (not notarized by
 Apple), Gatekeeper will block a plain double-click. Either:
@@ -107,38 +114,67 @@ ditto -c -k --sequesterRsrc --keepParent "dist/The Cafe Menu Sign Generator.app"
 
 ## Using the app
 
+### Every week
+
 1. **Pick Today's Special (.docx)…** — choose the weekly menu file.
 2. Confirm the **Starting Monday** date (defaults to the upcoming Monday).
 3. Pick **House Special** (maroon, default) or **Lighter Fare** (alt) design.
 4. **Whip Up a Preview** — review all five days on screen. If any label or
    item text is at risk of wrapping, fix the source document and re-parse.
-   A failed re-parse leaves the previous preview (and what Export/Update
-   act on) in place; action buttons are greyed out while a job runs.
-5. **Update This Week's Presentations…** — the actual weekly task. Check
-   off which days should get this week's new image (all 5 by default —
-   leave a day unchecked if it hasn't aired yet and shouldn't be
-   overwritten early, since there's only one recurring presentation per
-   weekday, not a separate "this week"/"next week" slot), then point it
-   at the shared brightAuthor:connected folder holding the five
-   `Cafe Menu <Day>.bpfx` files. This renders the checked days' PNGs and
-   rewrites each presentation to show them. Every checked day's `.bpfx`
-   is validated first — if any is missing or malformed, nothing is
-   written for any day. Then in brightAuthor:connected, just hit Publish.
-6. **Recipe (Instructions)** (or Help menu) — the full step-by-step
-   walkthrough, including the one-time schedule setup.
+   A failed re-parse leaves the previous preview (and what the action
+   buttons act on) in place; action buttons are greyed out while a job runs.
+5. **Push to Player…** — with the laptop plugged into the player's
+   network, check off which days should get this week's new image (all 5
+   by default — leave a day unchecked if it hasn't aired yet and
+   shouldn't be overwritten early, since there's only one recurring
+   presentation per weekday, not a separate "this week"/"next week"
+   slot). The app sends those signs straight to the BrightSign player,
+   restarts it (~30 seconds blank), and shows a screenshot of the sign.
+   - The player's IP is remembered from the first time you enter it; its
+     password is remembered in the Mac's login Keychain after the first
+     push that works — never in the repo or the app's files. **Clear IP**
+     / **Clear password** forget them.
+   - The confirmation warns (defaulting to **No**) if any sign is dated for
+     a different week than the one the player will show it in — e.g. the
+     Starting Monday left on its default (the *upcoming* Monday) while
+     pushing this week's menu mid-week.
+   - Unchanged days are skipped (no restart if nothing changed). Every
+     checked day is validated before anything is sent, and a backup of
+     the player's previous content list is saved to
+     `~/.cafe_menu_player_backups/`.
 
 - **Plate It Up (Export PNGs)…** — check off which days to export, then
-  saves those PNGs to a folder of your choice without touching any
-  presentation, if you just want the images themselves.
+  saves those PNGs to a folder of your choice without touching the
+  player or any presentation, if you just want the images themselves.
+- **Recipe (Instructions)** (or Help menu) — the full step-by-step
+  walkthrough.
 
-Tucked away in the **Advanced** menu (rarely needed day to day):
-- **Generate Schedule (.bpsx)… [one-time setup]** — pick which days to
-  schedule (all 5 by default), one shared start/end time, and the shared
-  Brightsign folder (the same one used by "Update This Week's
-  Presentations…"), then save. This only needs to be done **once ever**
-  — each day's entry recurs weekly forever. In brightAuthor:connected:
-  File → Open, switch the file-type filter to Schedule, open the
-  generated file, then Publish.
+### brightAuthor:connected — one-time setup, and the old way
+
+Push to Player swaps the images inside presentations that are already
+published on the player, so brightAuthor:connected is still needed once:
+
+- **One-time setup** (already done for the cafe's player; only again if
+  the player is replaced or reset):
+  - Publish the five `Cafe Menu <Day>.bpfx` presentations from
+    brightAuthor:connected once.
+  - **Advanced → Generate Schedule (.bpsx)… [one-time setup]** — pick
+    which days to schedule (all 5 by default), one shared start/end time,
+    and the shared Brightsign folder holding the `.bpfx` files, then save.
+    Each day's entry recurs weekly forever. In brightAuthor:connected:
+    File → Open, switch the file-type filter to Schedule, open the
+    generated file, then Publish.
+- **Update This Week's Presentations…** — the old weekly way. Check off
+  the days, point it at the shared folder holding the five
+  `Cafe Menu <Day>.bpfx` files, and it rewrites each presentation to show
+  the new signs (every checked day's `.bpfx` is validated first — if any
+  is missing or malformed, nothing is written). Then Publish from
+  brightAuthor:connected.
+- **Before any Publish from brightAuthor:connected**, run Update This
+  Week's Presentations for the current week first. A Publish sends
+  whatever images the `.bpfx` files point at; if the week only went out
+  by Push to Player, they still point at an older week, and the Publish
+  would put those back on the sign.
 
 Output filenames: `The_Cafe_Menu_<Day>_<YYYY-MM-DD>.png`.
 
@@ -155,15 +191,17 @@ Output filenames: `The_Cafe_Menu_<Day>_<YYYY-MM-DD>.png`.
   downsample to exact 3840×600, plus the pre-export layout check (text
   wrapping and rows overflowing the sign's height).
 - `app/app.py` — Tkinter GUI (file picker, date, variant, preview, export,
-  in-app help). Forces a fixed light color theme regardless of macOS's
-  dark/light mode setting.
+  in-app help). Follows macOS's Light/Dark appearance with its own
+  light and dark palettes, switching live if the setting changes.
 - `app/fonts/` — bundled Libre Franklin variable font files (roman + italic).
 - `app/brightsign_help/` — screenshots shown in the in-app "Recipe
   (Instructions)" panel.
 - `app/brightsign_client.py` — talks to a BrightSign player's Local DWS
-  REST API directly over the LAN (file listing so far; upload is written
-  but not wired to a button — see `context.md` for why it turned out to
-  be a dead end on this player's firmware).
+  REST API over the LAN (HTTPS, digest auth): list/read/upload files,
+  reboot, screenshot.
+- `app/player_push.py` — "Push to Player": uploads new PNGs into the
+  player's content pool and repoints each day's image in the published
+  `local-sync.json`, then reboots. See `context.md` for how and why.
 - `app/bpsx_schedule.py` — builds a fresh brightAuthor:connected schedule
   (`.bpsx`) file from scratch (day picker + one shared start/end time —
   no existing file needed), with each day set to recur weekly forever.
