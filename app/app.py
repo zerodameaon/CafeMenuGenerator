@@ -19,15 +19,29 @@ from PIL import Image, ImageTk
 
 if getattr(sys, "frozen", False):
     # Running as a PyInstaller-built .app: point Playwright at the Chromium
-    # bundled inside the app. sys._MEIPASS resolves to Contents/Frameworks
-    # in a --windowed onedir .app on macOS (not Contents/Resources, despite
-    # that being where PyInstaller's own --add-data assets also get mirrored) —
-    # build_app.sh copies Chromium into Contents/Frameworks/ms-playwright
-    # to match, instead of trying to download it at runtime, which would
-    # require network access.
-    bundle_root = Path(sys._MEIPASS)
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundle_root / "ms-playwright")
-    app_dir = bundle_root
+    # bundled inside the app (Contents/Resources/ms-playwright — see
+    # build_app.sh for why it's there and not in Frameworks) instead of
+    # downloading one at runtime, which would need the internet.
+    # sys.executable is Contents/MacOS/<name>.
+    browsers = Path(sys.executable).resolve().parents[1] / "Resources" / "ms-playwright"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers)
+    # A copy downloaded from GitHub carries macOS's quarantine flag on every
+    # file. Once the user has approved the app itself (Open Anyway), the
+    # bundled Chromium — only ad-hoc signed by Playwright — can still be
+    # refused on first launch while flagged. The flag isn't part of the code
+    # signature, so clearing it on our own files is safe. Best effort: it
+    # can't be done if macOS is running the app from a read-only
+    # "translocated" copy, which is why the README's one-line xattr command
+    # stays the recommended first-launch step.
+    try:
+        import subprocess
+        subprocess.run(["/usr/bin/xattr", "-dr", "com.apple.quarantine", str(browsers)],
+                       capture_output=True, timeout=30)
+    except Exception:
+        pass
+    # PyInstaller's own data files (fonts, help screenshots) are found via
+    # sys._MEIPASS, which is Contents/Frameworks in a --windowed onedir .app.
+    app_dir = Path(sys._MEIPASS)
 else:
     app_dir = Path(__file__).parent
 
