@@ -136,11 +136,12 @@ ditto -c -k --sequesterRsrc --keepParent "dist/The Cafe Menu Sign Generator.app"
    A failed re-parse leaves the previous preview (and what the action
    buttons act on) in place; action buttons are greyed out while a job runs.
 5. **Push to Player…** — with the laptop plugged into the player's
-   network, check off which days should get this week's new image (all 5
-   by default — leave a day unchecked if it hasn't aired yet and
-   shouldn't be overwritten early, since there's only one recurring
-   presentation per weekday, not a separate "this week"/"next week"
-   slot). The app sends those signs straight to the BrightSign player,
+   network, check off which days should get this week's new image. Days
+   whose new sign would replace one that hasn't aired yet start unchecked
+   (there's only one recurring presentation per weekday, not a separate
+   "this week"/"next week" slot) — e.g. pushing next week's menu on a
+   Thursday leaves Thursday and Friday unchecked; push them once this
+   week's have aired. The app sends those signs straight to the BrightSign player,
    restarts it (~30 seconds blank), and shows a screenshot of the sign.
    - The player's IP is remembered from the first time you enter it; its
      password is remembered in the Mac's login Keychain after the first

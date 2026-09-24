@@ -549,7 +549,10 @@ wrong. So `player_push.date_mismatches()` now compares each sign's date
 with the date the player will next show that weekday (today if it's that
 weekday — the schedule recurs forever, so that's the only week a pushed
 image can land in), and the confirmation becomes a warning defaulting to
-"No". Days of the current week that have already aired are deliberately
+"No". The same rule sets the Push dialog's default checkboxes: those days
+start unchecked, with a note saying why — so prepping next week early
+keeps this week's remaining signs (typically Friday) on the player without
+anyone having to remember to uncheck them. Days of the current week that have already aired are deliberately
 *not* flagged: re-sending Monday–Wednesday on a Thursday is harmless, and
 warning on every correct mid-week push would train people to click past
 it.

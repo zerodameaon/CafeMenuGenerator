@@ -158,10 +158,11 @@ INSTRUCTIONS_TEXT = """HOW TO COOK UP MENU SIGNS, STEP BY STEP
 
 5. Push to Player…  (the weekly step)
    Plug in the orange ethernet cable, then click "Push to Player…".
-   Check off which days should get this week's new image (all 5 by
-   default — uncheck a day if it hasn't aired yet and shouldn't be
-   overwritten early, e.g. Friday, if next week's menu shows up before
-   this week's Friday has played). The player's IP and password are
+   Check off which days should get this week's new image. Days whose
+   new sign would replace one that hasn't aired yet start unchecked —
+   e.g. push next week's menu on a Thursday and Thursday + Friday start
+   unchecked, so this week's signs stay up. Push those days again once
+   this week's have aired (after 4 pm, or over the weekend). The player's IP and password are
    filled in for you after the first push that works: the IP is
    remembered by the app, the password in this Mac's Keychain. "Clear
    IP" / "Clear password" forget them. Confirm, and the app sends the
@@ -281,9 +282,10 @@ BRIGHTSIGN_STEPS = [
         "the app shows a screenshot of what's on screen. Done.\n\n"
         "There's only one Friday presentation, shared by every week (the "
         "schedule can't tell \"this Friday\" from \"next Friday\"). If next "
-        "week's menu shows up before this week's Friday has aired, leave "
-        "Friday unchecked for now and push it once this week's Friday has "
-        "actually played — otherwise you'd overwrite it early.",
+        "week's menu shows up before this week's Friday has aired, the app "
+        "starts Friday unchecked for you, so this week's Friday stays up. "
+        "Push next week's Friday once this week's has actually played "
+        "(after 4 pm Friday, or over the weekend).",
         None,
     ),
     ("brightAuthor:connected — one-time setup, and the old way", None, None),
@@ -557,6 +559,11 @@ def _next_monday(today: date) -> date:
     days_ahead = (7 - today.weekday()) % 7
     days_ahead = days_ahead or 7
     return today + timedelta(days=days_ahead) if today.weekday() != 0 else today
+
+
+def _mismatch_line(day: str, sign: date, shown: date, today: date) -> str:
+    return (f"• {day}'s sign says {format_month_day(sign)}, but the player will show it "
+            f"{'today' if shown == today else 'next'} on {format_month_day(shown)}.")
 
 
 def _recolor_tree(widget, old: dict, new: dict) -> None:
@@ -1125,7 +1132,8 @@ class App:
 
         win = Toplevel(self.root, bg=BG)
         win.title("Push to Player")
-        win.geometry("480x580")
+        # No fixed size: the window fits its contents, so the note about
+        # unchecked days below can never push the Push button out of view.
 
         Label(
             win, text="Which days should the player get this week's image for?",
@@ -1141,14 +1149,32 @@ class App:
         ).pack(anchor="w", padx=16, pady=(0, 10))
 
         days = self.days  # snapshot; see update_presentations
+        # Days whose sign would air in the wrong week start unchecked — e.g.
+        # pushing next week's menu on Thursday leaves Friday unchecked, so
+        # this week's Friday sign stays on the player until it has aired.
+        # Same rule as the warning in do_push (player_push.date_mismatches),
+        # so days of this week that have already aired stay checked.
+        today = date.today()
+        unchecked = player_push.date_mismatches({d.day_name: d.menu_date for d in days}, today)
+        held_back = {day for day, _, _ in unchecked}
         day_vars: dict[str, BooleanVar] = {}
         for day in days:
             label = f"{day.day_name} — {format_month_day(day.menu_date)}"
             if day.closed:
                 label += "  (Closed)"
-            var = BooleanVar(value=True)
+            var = BooleanVar(value=day.day_name not in held_back)
             day_vars[day.day_name] = var
             ttk.Checkbutton(win, text=label, variable=var).pack(anchor="w", padx=24, pady=2)
+        if unchecked:
+            Label(
+                win,
+                text="Left unchecked — these would replace a sign that hasn't aired yet, "
+                     "or are dated for a different week:\n"
+                     + "\n".join(_mismatch_line(d, sign, shown, today) for d, sign, shown in unchecked)
+                     + "\nPush them after the current one has aired (or check the Starting "
+                       "Monday date).",
+                bg=BG, fg=MUTED_FG, wraplength=420, justify="left",
+            ).pack(anchor="w", padx=24, pady=(6, 0))
 
         form = Frame(win, bg=BG)
         form.pack(anchor="w", padx=16, pady=(14, 0))
@@ -1202,11 +1228,7 @@ class App:
             today = date.today()
             mismatches = player_push.date_mismatches({d.day_name: d.menu_date for d in selected_days}, today)
             if mismatches:
-                lines = "\n".join(
-                    f"• {day}'s sign says {format_month_day(sign)}, but the player will show it "
-                    f"{'today' if shown == today else 'next'} on {format_month_day(shown)}."
-                    for day, sign, shown in mismatches
-                )
+                lines = "\n".join(_mismatch_line(day, sign, shown, today) for day, sign, shown in mismatches)
                 confirmed = messagebox.askyesno(
                     "Wrong Week on the Menu?",
                     f"These signs are dated for a different week than the one they'll be shown in:\n\n"
