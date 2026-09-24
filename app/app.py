@@ -74,6 +74,11 @@ INSTRUCTIONS_TEXT = """HOW TO COOK UP MENU SIGNS, STEP BY STEP
    have none) — whichever is present is used and labeled to match; having
    BOTH on Friday is still treated as an error (that's ambiguous, not
    just sparse).
+   Each day's heading should appear exactly once. The menu can be plain
+   lines or laid out in a Word table — both are read. A day whose only
+   text is a note like "Office Closed" gets a CLOSED sign; a day that has
+   real menu lines is never treated as closed, even if it also has a
+   note like "Cafe closed early at 1pm".
 
 2. Starting Monday
    Confirm the date of that week's Monday (YYYY-MM-DD). Tuesday–Friday
@@ -89,8 +94,11 @@ INSTRUCTIONS_TEXT = """HOW TO COOK UP MENU SIGNS, STEP BY STEP
    size so you can check the content and layout before generating the
    final files. Parsing only fails if a day ends up with nothing
    recognized at all (likely a formatting problem, not an intentionally
-   sparse day) or if Friday lists both soup lines at once — you'll get
-   an error describing exactly what's wrong.
+   sparse day), if Friday lists both soup lines at once, or if a day's
+   heading appears twice — you'll get an error describing exactly what's
+   wrong. If a re-parse fails, the previous preview (and what the export
+   buttons act on) stays as it was. The buttons are greyed out while a
+   preview, export, or update is cooking.
 
 5. Update This Week's Presentations…
    Check off which days should get this week's new image (all 5 checked
@@ -104,9 +112,12 @@ INSTRUCTIONS_TEXT = """HOW TO COOK UP MENU SIGNS, STEP BY STEP
    Publish.
 
    If any label or item text is too long and would wrap to a second
-   line on the sign, this gets sent back to the kitchen (blocked) with
-   an error telling you which day and which text — fix the source
-   document and re-parse rather than shipping a half-baked layout.
+   line on the sign, or a day has so many rows that the bottom would be
+   cut off, this gets sent back to the kitchen (blocked) with an error
+   telling you which day and what's wrong — fix the source document and
+   re-parse rather than shipping a half-baked layout. If any selected
+   day's presentation file is missing or unreadable, nothing is changed
+   for any day, so you never end up with a half-updated week.
 
    See "Recipe (Instructions)" in the Help menu for the full weekly
    walkthrough, including the one-time schedule setup.
@@ -404,7 +415,11 @@ def show_player_browser(root: Tk):
                 result_text = "\n".join(lines) if lines else "(empty)"
                 status_text = f"{len(files)} item(s) at {storage}/{path or '(root)'}"
             except brightsign_client.BrightSignError as e:
-                win.after(0, lambda: status_var.set(f"Failed: {e}"))
+                # Bind the message now — Python unbinds `e` when this except
+                # block exits, so a lambda that referenced `e` directly would
+                # raise NameError when Tk runs it later.
+                msg = f"Failed: {e}"
+                win.after(0, lambda: status_var.set(msg))
                 return
             except Exception as e:
                 # Unexpected shape from the real player — show it raw rather
@@ -448,8 +463,11 @@ class App:
 
         self.docx_path: str | None = None
         self.start_monday: date = _next_monday(date.today()) if date.today().weekday() != 0 else date.today()
+        # Only ever set to a parse whose preview rendered successfully, so the
+        # export/update buttons always act on what's actually shown on screen.
         self.days: list[DayMenu] | None = None
         self.variant = StringVar(value="main")
+        self._busy = False
 
         self._build_menu()
         self._build_ui()
@@ -523,9 +541,8 @@ class App:
             side="left", padx=10
         )
 
-        ttk.Button(top, text="Whip Up a Preview", command=self.parse_and_preview).grid(
-            row=4, column=0, sticky="w", pady=(14, 0)
-        )
+        self.preview_btn = ttk.Button(top, text="Whip Up a Preview", command=self.parse_and_preview)
+        self.preview_btn.grid(row=4, column=0, sticky="w", pady=(14, 0))
         self.status_label = Label(top, text="", bg=BG, fg=MUTED_FG)
         self.status_label.grid(row=4, column=1, sticky="w", pady=(14, 0))
 
@@ -583,62 +600,64 @@ class App:
             ):
                 return
 
-        # If a prior parse already succeeded, its buttons should stay usable
-        # (against the still-valid self.days) if this reparse attempt fails.
-        had_prior_days = self.days is not None
-
+        # Parse into a local, not self.days: self.days only changes once the
+        # preview for it has actually rendered, so a failed reparse/preview
+        # leaves export/update acting on the preview still shown on screen.
         self.status_label.config(text="Prepping the ingredients…", fg=MUTED_FG)
-        self.advanced_menu.entryconfig(0, state="disabled")
-        self.export_btn.config(state="disabled")
-        self.update_presentations_btn.config(state="disabled")
+        self._set_busy(True)
         self.root.update_idletasks()
 
         try:
-            self.days = parse_menu_docx(self.docx_path, start)
+            new_days = parse_menu_docx(self.docx_path, start)
         except MenuParseError as e:
             messagebox.showerror("Recipe Didn't Work Out", str(e))
             self.status_label.config(text="Parsing flopped.", fg=BAD_FG)
-            self._restore_action_buttons(had_prior_days)
+            self._set_busy(False)
             return
         except Exception as e:
             messagebox.showerror("Kitchen Nightmare", f"{e}\n\n{traceback.format_exc()}")
             self.status_label.config(text="Parsing flopped.", fg=BAD_FG)
-            self._restore_action_buttons(had_prior_days)
+            self._set_busy(False)
             return
 
         self.status_label.config(text="Plating the preview…", fg=MUTED_FG)
         self.root.update_idletasks()
-        threading.Thread(target=self._render_preview_thread, args=(had_prior_days,), daemon=True).start()
+        # Tk isn't thread-safe — read the variant here on the main thread
+        # and hand it to the worker rather than calling .get() from there.
+        threading.Thread(
+            target=self._render_preview_thread, args=(new_days, self.variant.get()), daemon=True
+        ).start()
 
-    def _render_preview_thread(self, had_prior_days: bool):
+    def _render_preview_thread(self, new_days: list[DayMenu], variant: str):
         try:
-            variant = self.variant.get()
             previews = []
-            for day in self.days:
+            for day in new_days:
                 png_bytes = render_preview_png_bytes(day, variant=variant)
                 previews.append((day, png_bytes))
-            self.root.after(0, lambda: self._show_previews(previews))
+            self.root.after(0, lambda: self._show_previews(new_days, previews))
         except Exception as e:
             err = f"{e}\n\n{traceback.format_exc()}"
-            self.root.after(0, lambda: self._preview_failed(err, had_prior_days))
+            self.root.after(0, lambda: self._preview_failed(err))
 
-    def _preview_failed(self, err: str, had_prior_days: bool):
+    def _preview_failed(self, err: str):
         messagebox.showerror("Preview Burnt to a Crisp", err)
         self.status_label.config(text="Preview didn't make it out of the kitchen.", fg=BAD_FG)
-        self._restore_action_buttons(had_prior_days)
+        self._set_busy(False)
 
-    def _restore_action_buttons(self, had_prior_days: bool):
-        """Re-enable the export/update-presentations buttons after a failed
-        (re)parse or preview render, but only if there's still a previously
-        successful self.days to act on — a first-ever failure should leave
-        them disabled since there's nothing valid to export yet."""
-        if not had_prior_days:
-            return
-        self.advanced_menu.entryconfig(0, state="normal")
-        self.export_btn.config(state="normal")
-        self.update_presentations_btn.config(state="normal")
+    def _set_busy(self, busy: bool):
+        """Locks every action that starts background work (or reads
+        self.days) while a preview, export, or update is running, so two
+        jobs can't overlap or swap self.days out from under each other.
+        When unlocking, export/update/schedule only come back if there's a
+        successfully previewed self.days to act on."""
+        self._busy = busy
+        self.preview_btn.config(state="disabled" if busy else "normal")
+        actions_state = "normal" if (not busy and self.days is not None) else "disabled"
+        self.advanced_menu.entryconfig(0, state=actions_state)
+        self.export_btn.config(state=actions_state)
+        self.update_presentations_btn.config(state=actions_state)
 
-    def _show_previews(self, previews: list[tuple[DayMenu, bytes]]):
+    def _show_previews(self, new_days: list[DayMenu], previews: list[tuple[DayMenu, bytes]]):
         for widget in self.preview_frame.winfo_children():
             widget.destroy()
         self._preview_images.clear()
@@ -658,10 +677,9 @@ class App:
             ).pack(fill="x")
             Label(row, image=tk_img, bg=BG).pack()
 
+        self.days = new_days
         self.status_label.config(text="Fresh off the grill — give it a taste-test before you plate it up.", fg=GOOD_FG)
-        self.advanced_menu.entryconfig(0, state="normal")
-        self.update_presentations_btn.config(state="normal")
-        self.export_btn.config(state="normal")
+        self._set_busy(False)
 
     def generate_schedule(self):
         if not self.days:
@@ -676,8 +694,9 @@ class App:
             font=("", 12, "bold"), anchor="w",
         ).pack(anchor="w", padx=16, pady=(16, 6))
 
+        days = self.days  # snapshot; see update_presentations
         day_vars: dict[str, BooleanVar] = {}
-        for day in self.days:
+        for day in days:
             var = BooleanVar(value=True)
             day_vars[day.day_name] = var
             ttk.Checkbutton(
@@ -703,7 +722,7 @@ class App:
         )
 
         def do_generate():
-            selected = [(day.day_name, day.menu_date) for day in self.days if day_vars[day.day_name].get()]
+            selected = [(day.day_name, day.menu_date) for day in days if day_vars[day.day_name].get()]
             if not selected:
                 messagebox.showwarning("Missing info", "Pick at least one day.")
                 return
@@ -775,16 +794,23 @@ class App:
             bg=BG, fg=MUTED_FG, wraplength=380, justify="left",
         ).pack(anchor="w", padx=16, pady=(0, 10))
 
+        # Snapshot the days this dialog's checkboxes describe, in case a new
+        # preview replaces self.days while the dialog is still open.
+        days = self.days
         day_vars: dict[str, BooleanVar] = {}
-        for day in self.days:
+        for day in days:
+            label = f"{day.day_name} — {format_month_day(day.menu_date)}"
+            if day.closed:
+                label += "  (Closed)"
             var = BooleanVar(value=True)
             day_vars[day.day_name] = var
-            ttk.Checkbutton(
-                win, text=f"{day.day_name} — {format_month_day(day.menu_date)}", variable=var,
-            ).pack(anchor="w", padx=24, pady=2)
+            ttk.Checkbutton(win, text=label, variable=var).pack(anchor="w", padx=24, pady=2)
 
         def do_update():
-            selected_days = [day for day in self.days if day_vars[day.day_name].get()]
+            if self._busy:
+                messagebox.showwarning("Still Cooking", "Wait for the current job to finish first.")
+                return
+            selected_days = [day for day in days if day_vars[day.day_name].get()]
             if not selected_days:
                 messagebox.showwarning("Missing info", "Pick at least one day.")
                 return
@@ -798,18 +824,19 @@ class App:
 
             win.destroy()
             self.status_label.config(text="Swapping in this week's specials…", fg=MUTED_FG)
-            self.update_presentations_btn.config(state="disabled")
+            self._set_busy(True)
             self.root.update_idletasks()
             threading.Thread(
-                target=self._update_presentations_thread, args=(bpfx_dir, selected_days), daemon=True
+                target=self._update_presentations_thread,
+                args=(bpfx_dir, selected_days, self.variant.get()), daemon=True,
             ).start()
 
         ttk.Button(win, text="Update", command=do_update).pack(pady=(16, 12))
 
-    def _update_presentations_thread(self, bpfx_dir: Path, selected_days: list[DayMenu]):
+    def _update_presentations_thread(self, bpfx_dir: Path, selected_days: list[DayMenu], variant: str):
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                results = render_days(selected_days, Path(tmp), variant=self.variant.get(), strict=True)
+                results = render_days(selected_days, Path(tmp), variant=variant, strict=True)
                 day_to_png = {r.day_name: r.png_path for r in results}
                 written = bpfx_update.update_week(bpfx_dir, day_to_png)
             names = "\n".join(p.name for p in written)
@@ -817,7 +844,7 @@ class App:
                 0,
                 lambda: (
                     self.status_label.config(text="This week's presentations are updated.", fg=GOOD_FG),
-                    self.update_presentations_btn.config(state="normal"),
+                    self._set_busy(False),
                     messagebox.showinfo(
                         "Order Up!",
                         f"Updated {len(written)} presentation(s):\n{names}\n\n"
@@ -828,12 +855,13 @@ class App:
                 ),
             )
         except (RenderValidationError, bpfx_update.BpfxUpdateError) as e:
+            msg = str(e)  # `e` is unbound once this block exits; see do_list
             self.root.after(
                 0,
                 lambda: (
-                    messagebox.showerror("86'd — Update Didn't Take", str(e)),
+                    messagebox.showerror("86'd — Update Didn't Take", msg),
                     self.status_label.config(text="Presentation update didn't make it out of the kitchen.", fg=BAD_FG),
-                    self.update_presentations_btn.config(state="normal"),
+                    self._set_busy(False),
                 ),
             )
         except Exception as e:
@@ -843,7 +871,7 @@ class App:
                 lambda: (
                     messagebox.showerror("Kitchen Fire", err),
                     self.status_label.config(text="Presentation update didn't make it out of the kitchen.", fg=BAD_FG),
-                    self.update_presentations_btn.config(state="normal"),
+                    self._set_busy(False),
                 ),
             )
 
@@ -860,8 +888,9 @@ class App:
             font=("", 12, "bold"), anchor="w",
         ).pack(anchor="w", padx=16, pady=(16, 6))
 
+        days = self.days  # snapshot; see update_presentations
         day_vars: dict[str, BooleanVar] = {}
-        for day in self.days:
+        for day in days:
             label = f"{day.day_name} — {format_month_day(day.menu_date)}"
             if day.closed:
                 label += "  (Closed)"
@@ -870,7 +899,10 @@ class App:
             ttk.Checkbutton(win, text=label, variable=var).pack(anchor="w", padx=24, pady=2)
 
         def do_export():
-            selected_days = [day for day in self.days if day_vars[day.day_name].get()]
+            if self._busy:
+                messagebox.showwarning("Still Cooking", "Wait for the current job to finish first.")
+                return
+            selected_days = [day for day in days if day_vars[day.day_name].get()]
             if not selected_days:
                 messagebox.showwarning("Missing info", "Pick at least one day.")
                 return
@@ -881,17 +913,17 @@ class App:
 
             win.destroy()
             self.status_label.config(text="Plating the final dishes…", fg=MUTED_FG)
-            self.export_btn.config(state="disabled")
+            self._set_busy(True)
             self.root.update_idletasks()
             threading.Thread(
-                target=self._export_thread, args=(Path(out_dir), selected_days), daemon=True
+                target=self._export_thread, args=(Path(out_dir), selected_days, self.variant.get()), daemon=True
             ).start()
 
         ttk.Button(win, text="Export", command=do_export).pack(pady=(16, 12))
 
-    def _export_thread(self, out_dir: Path, selected_days: list[DayMenu]):
+    def _export_thread(self, out_dir: Path, selected_days: list[DayMenu], variant: str):
         try:
-            results = render_days(selected_days, out_dir, variant=self.variant.get(), strict=True)
+            results = render_days(selected_days, out_dir, variant=variant, strict=True)
             names = "\n".join(r.png_path.name for r in results)
             self.root.after(
                 0,
@@ -899,17 +931,18 @@ class App:
                     self.status_label.config(
                         text=f"Served! {len(results)} PNG(s) plated up in {out_dir}", fg=GOOD_FG
                     ),
-                    self.export_btn.config(state="normal"),
+                    self._set_busy(False),
                     messagebox.showinfo("Order Up!", f"Served:\n{names}"),
                 ),
             )
         except RenderValidationError as e:
+            msg = str(e)  # `e` is unbound once this block exits; see do_list
             self.root.after(
                 0,
                 lambda: (
-                    messagebox.showerror("86'd — Layout Problem", str(e)),
-                    self.status_label.config(text="Sent back to the kitchen: text wrapped.", fg=BAD_FG),
-                    self.export_btn.config(state="normal"),
+                    messagebox.showerror("86'd — Layout Problem", msg),
+                    self.status_label.config(text="Sent back to the kitchen: layout problem.", fg=BAD_FG),
+                    self._set_busy(False),
                 ),
             )
         except Exception as e:
@@ -919,7 +952,7 @@ class App:
                 lambda: (
                     messagebox.showerror("Kitchen Fire", err),
                     self.status_label.config(text="Export didn't make it out of the kitchen.", fg=BAD_FG),
-                    self.export_btn.config(state="normal"),
+                    self._set_busy(False),
                 ),
             )
 

@@ -26,16 +26,17 @@ brightAuthor:connected.
 ```
 .docx  →  parser.py (DayMenu/MenuRow)  →  template.py (HTML string)
        →  renderer.py (Playwright/Chromium screenshot, 4x supersample
-          → Lanczos downsample to 3840×600, wrap-detection guard)
+          → Lanczos downsample to 3840×600, wrap + overflow guard)
        →  PNG files
 ```
 
 `app.py` is the Tkinter GUI wrapping all of the above, plus two in-app help
 panels.
 
-- **`parser.py`** — pure logic, no UI/rendering dependencies. Splits the
-  docx into per-day blocks on lines that exactly match a weekday name, then
-  extracts labeled lines. Friday's veg/non-veg soup ambiguity and
+- **`parser.py`** — pure logic, no UI/rendering dependencies. Reads every
+  line of the docx in document order (paragraphs *and* table cells, soft
+  line breaks split into separate lines), splits it into per-day blocks on
+  lines that exactly match a weekday name, then extracts labeled lines. Friday's veg/non-veg soup ambiguity and
   Wednesday's standalone "Assorted Sushi" line are handled here, not in the
   template.
 - **`template.py`** — builds one self-contained HTML string per day. Fonts
@@ -44,7 +45,7 @@ panels.
 - **`renderer.py`** — drives headless Chromium via Playwright: renders each
   day's HTML at a 4x device-scale-factor viewport, screenshots, then
   Lanczos-downsamples to the exact 3840×600 target (see "Why supersample"
-  below). Also runs the wrap-detection check before allowing export.
+  below). Also runs the wrap/overflow layout check before allowing export.
 - **`app.py`** — Tkinter GUI. Also bootstraps `PLAYWRIGHT_BROWSERS_PATH`
   when running as a frozen PyInstaller build (see "Packaging" below).
 
@@ -84,6 +85,14 @@ made the JS check permanently pass (nothing can "wrap" if it's forbidden
 from wrapping — it just silently overflows instead). If you ever add
 `nowrap` back for some other reason, the validation guard goes blind again;
 test it deliberately (see below) if you touch this.
+
+**Vertical overflow is checked too (2026-09-24).** The wrap check only
+catches text running out of room *sideways*. `html`/`body` are
+`overflow: hidden`, so a day with too many rows would just have its bottom
+rows silently clipped off the sign. `LAYOUT_CHECK_JS` now also compares the
+`.menu` column's `scrollHeight` to its `clientHeight` and blocks export if
+the rows don't fit. Verified that a full 6-row Wednesday (the tallest real
+layout) passes in both variants, and a 12-row day is caught.
 
 **How to test the guard still works:** temporarily lengthen a row's label
 or item text via `parser.py`'s output in a scratch script, run it through
@@ -203,6 +212,49 @@ extracting the zip to a scratch location and launching it before treating
 the packaging step as "done." Keep doing that — a build that merely
 completes without error is not proof it actually works when moved to
 another machine.
+
+### Bug-check pass (2026-09-24, v0.1.6)
+
+A full read-through turned up several bugs, each fixed and verified with a
+scratch test (not just by reading the code):
+
+- **Error dialogs silently never appeared.** Background-thread error
+  handlers did `except X as e: root.after(0, lambda: ... str(e))`. Python
+  *unbinds* `e` when the `except` block exits, so the lambda raised
+  `NameError` when Tk ran it — no dialog, status text frozen, and the
+  Export/Update button stuck disabled until restart. This hit the most
+  common real failure (text wrap blocking an export) and the player
+  browser's `BrightSignError` path. **Rule: never reference the `except`
+  variable inside a deferred callback — copy it to a local first**
+  (`msg = str(e)`), as the generic `except Exception` handlers already did
+  with `err`.
+- **"Closed" detection swallowed real menus.** `_closed_reason()` marked a
+  day closed if *any* colon-less line mentioned "closed", despite its
+  docstring saying "no menu lines". A day with a full menu plus "Cafe
+  closed early at 1pm" rendered as a CLOSED sign. Now a day is only closed
+  if it has no recognized menu line at all (`_is_menu_line()`).
+- **`update_week()` atomicity** — see the `.bpfx` section below.
+- **Parser robustness.** Labels are matched through `_key()` (NFC
+  normalize, Unicode dashes → `-`, any whitespace incl. NBSP → one space,
+  lowercased) because Word AutoFormat look-alikes made labels like
+  "Non‑Vegetarian Soup Du Jour" (non-breaking hyphen) silently fail to
+  match and the row just vanished. Item text on the sign is left exactly as
+  typed — `_key()` is for matching only. Tables are now read (via
+  `iter_inner_content()`, needs python-docx ≥ 1.0; cells are walked via
+  `tr.tc_lst` so a horizontally merged cell isn't read once per grid
+  column). Soft line breaks (Shift+Enter) split into separate lines —
+  previously the second line got glued onto the first item. A duplicated
+  day heading is now an error; before, it silently discarded the first
+  block.
+- **GUI state.** One `App._set_busy()` now locks Preview, Export, Update,
+  and Advanced → Generate Schedule for the duration of any background job,
+  and on unlock only re-enables the action buttons if `self.days` is set.
+  `self.days` is only assigned in `_show_previews()` — a parse is held in a
+  local until its preview renders — so a failed reparse/preview leaves
+  export/update acting on what's still on screen. (This supersedes the
+  `had_prior_days` fix from 2026-09-08.) Each day-picker dialog snapshots
+  `self.days` when opened. `self.variant.get()` is read on the main thread
+  and passed into workers, since Tk isn't thread-safe.
 
 ## The "Recipe (Instructions)" panel
 
@@ -531,9 +583,14 @@ the `_ev`/`_tr`-suffixed cosmetic names in `bsdm.events` /
 `bsdm.transitions.transitionsById`. `update_presentation()` finds the
 single `mediaType == "Image"` entry in `assetMap` and the one `mediaState`
 whose `contentItem.assetId` matches it; `update_week()` does this for all
-five `"Cafe Menu <Day>.bpfx"` files at once, atomically (validates every
-day's file exists and has the expected single-image shape *before*
-writing any of them, so a partial week never gets half-applied).
+five `"Cafe Menu <Day>.bpfx"` files at once, atomically (loads and
+validates every day's file — exists, is readable JSON, has the expected
+sections and single-image shape — *before* writing any of them, so a
+partial week never gets half-applied). Until 2026-09-24 this only checked
+that each file *existed*; the shape check ran mid-write, so a malformed
+Wednesday file left Monday/Tuesday already rewritten. The shape check now
+lives in `_locate_image()`, called by both the upfront pass and
+`update_presentation()` itself.
 
 **The path problem, and a real bug it caused (2026-08-28).** Each asset's
 original `path` field (`/Users/stbpa/Downloads/files(2)/`) doesn't live in
@@ -561,8 +618,8 @@ installation id, not a filesystem path) is unaffected and still
 hardcoded — there's no folder-derived way to guess it, and no evidence
 yet that it's actually wrong.
 
-**GUI**: "Update This Week's Presentations…" is now the *only* bottom-bar
-button left, enabled after a successful preview. Prompts for the shared
+**GUI**: "Update This Week's Presentations…" is the main bottom-bar
+button, enabled after a successful preview. Prompts for the shared
 Brightsign folder (containing the five `Cafe Menu <Day>.bpfx` files),
 renders the current `self.days` to a temp directory, then calls
 `bpfx_update.update_week()`. Tells the user to just hit Publish in bAc
@@ -574,11 +631,11 @@ that this button is the actual weekly task: "Plate It Up (Export 5 PNGs)…"
 and "Generate Schedule (.bpsx)…" moved out of the bottom bar into a new
 **Advanced** menu in the menu bar (both one-off/rare actions now — export
 is only needed if you want the raw PNGs, and schedule generation is a
-one-time setup). Their enable/disable state moved from `ttk.Button.config`
-to `Menu.entryconfig(index, state=...)` on `self.advanced_menu` — indices
-0 and 1 respectively; if a third Advanced item is ever added *before*
-these, the hardcoded indices in `parse_and_preview()`, `_show_previews()`,
-`export()`, and `_export_thread()` will need updating to match. The
+one-time setup). (Plate It Up has since moved back to a main-screen
+button — see git history, 2026-09-03 — so only Generate Schedule remains
+in Advanced, at `Menu.entryconfig` index 0. All enable/disable state now
+goes through `App._set_busy()`; if another Advanced item is ever added
+*before* it, update the index there.) The
 former "Send to BrightSign →" button was renamed **"Recipe
 (Instructions)"** (the Help-menu item was renamed to match), and its
 content (`BRIGHTSIGN_STEPS`) was rewritten for the new workflow — the

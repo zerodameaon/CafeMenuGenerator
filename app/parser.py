@@ -1,10 +1,13 @@
 """Parse the weekly cafe menu .docx into structured day data."""
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 import docx
+from docx.table import Table, _Cell
 
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
@@ -48,12 +51,45 @@ def format_month_day(d: date) -> str:
     return f"{d.strftime('%B')} {d.day}, {d.year}"
 
 
+# Word's AutoFormat quietly swaps in look-alike characters (non-breaking
+# hyphens/spaces, en/em dashes), and text can arrive in decomposed Unicode
+# (e + combining accent for "é"). Any of those would make a label like
+# "Non‑Vegetarian Soup Du Jour" silently fail to match LABEL_MAP, and that
+# row would just vanish from the sign. _key() is used only for matching —
+# item text shown on the sign is left exactly as typed.
+_DASHES = re.compile(r"[\u2010-\u2015\u2212]")
+_SPACES = re.compile(r"\s+")
+
+
+def _key(text: str) -> str:
+    text = unicodedata.normalize("NFC", text)
+    text = _DASHES.sub("-", text)
+    text = _SPACES.sub(" ", text)  # \s covers NBSP and other Unicode spaces
+    return text.strip().lower()
+
+
 def _iter_paragraph_lines(doc: docx.Document) -> list[str]:
-    lines = []
-    for p in doc.paragraphs:
-        text = p.text.strip()
-        if text:
-            lines.append(text)
+    """Every non-empty line of text in document order, including text inside
+    tables (a menu laid out in a Word table would otherwise be invisible).
+    Soft line breaks (Shift+Enter) within one paragraph are split into
+    separate lines too, since each is visually its own menu line."""
+    lines: list[str] = []
+
+    def walk(container) -> None:
+        for block in container.iter_inner_content():
+            if isinstance(block, Table):
+                # tr.tc_lst yields each physical cell once; row.cells would
+                # repeat a horizontally merged cell once per grid column.
+                for tr in block._tbl.tr_lst:
+                    for tc in tr.tc_lst:
+                        walk(_Cell(tc, block))
+            else:
+                for part in block.text.split("\n"):
+                    part = part.strip()
+                    if part:
+                        lines.append(part)
+
+    walk(doc)
     return lines
 
 
@@ -81,9 +117,13 @@ def parse_menu_docx(path: str, start_monday: date) -> list[DayMenu]:
     day_blocks: dict[str, list[str]] = {}
     current_day = None
     for line in lines:
-        stripped = line.strip()
-        matched_day = next((d for d in DAY_NAMES if stripped.lower() == d.lower()), None)
+        matched_day = next((d for d in DAY_NAMES if _key(line) == d.lower()), None)
         if matched_day:
+            if matched_day in day_blocks:
+                raise MenuParseError(
+                    f"Found more than one '{matched_day}' heading. Each day should "
+                    "appear exactly once — check for a duplicated or mislabeled day."
+                )
             current_day = matched_day
             day_blocks[current_day] = []
             continue
@@ -114,11 +154,21 @@ def parse_menu_docx(path: str, start_monday: date) -> list[DayMenu]:
     return days
 
 
+def _is_menu_line(line: str) -> bool:
+    if _key(line) == "assorted sushi":
+        return True
+    split = _split_label_item(line)
+    return split is not None and _key(split[0]) in LABEL_MAP
+
+
 def _closed_reason(block_lines: list[str]) -> str | None:
-    """A day block with no colon-delimited menu lines, but a line mentioning
+    """A day block with no recognized menu lines, but a line mentioning
     "closed", is the office announcing a closure (e.g. a holiday) rather than
     a malformed section. Returns the closure line's text (for display) if so,
-    else None."""
+    else None. A day that has real menu lines is never treated as closed,
+    even if it also carries a note like "Cafe closed early at 1pm"."""
+    if any(_is_menu_line(line) for line in block_lines):
+        return None
     for line in block_lines:
         stripped = line.strip()
         if "closed" in stripped.lower() and _split_label_item(stripped) is None:
@@ -144,14 +194,14 @@ def _parse_day_block(day_name: str, block_lines: list[str]) -> list[MenuRow]:
     has_sushi = False
 
     for line in block_lines:
-        if line.strip().lower() == "assorted sushi":
+        if _key(line) == "assorted sushi":
             has_sushi = True
             continue
         split = _split_label_item(line)
         if not split:
             continue
         raw_label, item = split
-        key = raw_label.lower()
+        key = _key(raw_label)
         if key in LABEL_MAP:
             parsed[LABEL_MAP[key]] = item
 

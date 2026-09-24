@@ -13,17 +13,22 @@ from template import build_day_html
 TARGET_W, TARGET_H = 3840, 600
 SCALE = 4
 
-# JS injected after render to detect any label/item that wrapped to 2+ lines.
-WRAP_CHECK_JS = """
+# JS injected after render to detect layout that would ship broken: any
+# label/item that wrapped to 2+ lines, and a menu column whose rows don't
+# fit in the 600px height (html/body are overflow:hidden, so without this
+# check the bottom rows would just be silently cut off the sign).
+LAYOUT_CHECK_JS = """
 () => {
-  const problems = [];
+  const wrapped = [];
   document.querySelectorAll('.label, .item-cell').forEach(el => {
     const singleLineHeight = parseFloat(getComputedStyle(el).fontSize) * 1.3;
     if (el.offsetHeight > singleLineHeight * 1.6) {
-      problems.push(el.textContent.trim());
+      wrapped.push(el.textContent.trim());
     }
   });
-  return problems;
+  const menu = document.querySelector('.menu');
+  const overflow = menu ? menu.scrollHeight > menu.clientHeight + 1 : false;
+  return {wrapped, overflow};
 }
 """
 
@@ -60,12 +65,19 @@ def render_days(
                 page.set_content(html_str, wait_until="load")
                 page.evaluate("document.fonts.ready")
 
-                wrap_problems = page.evaluate(WRAP_CHECK_JS)
+                layout = page.evaluate(LAYOUT_CHECK_JS)
+                wrap_problems = layout["wrapped"]
                 if wrap_problems and strict:
                     raise RenderValidationError(
                         f"{day.day_name}: text wrapped to multiple lines for: "
                         f"{', '.join(wrap_problems)}. Layout would ship broken — "
                         "widen the label column or shrink the font before exporting."
+                    )
+                if layout["overflow"] and strict:
+                    raise RenderValidationError(
+                        f"{day.day_name}: the menu rows are too tall to fit on the "
+                        "sign, so the bottom would be cut off. Layout would ship "
+                        "broken — shorten or remove a row before exporting."
                     )
 
                 date_tag = day.menu_date.strftime("%Y-%m-%d")

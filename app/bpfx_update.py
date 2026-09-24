@@ -68,6 +68,49 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
+def _load_presentation(bpfx_path: Path) -> dict:
+    try:
+        return json.loads(bpfx_path.read_text())
+    except (OSError, ValueError) as e:
+        raise BpfxUpdateError(f"{bpfx_path.name}: couldn't read presentation file ({e}).") from e
+
+
+def _locate_image(data: dict, bpfx_path: Path) -> tuple[str, dict, str, dict]:
+    """Finds the one image asset and the one mediaState that shows it.
+    Returns (asset_id, asset, media_state_id, media_state). Raises
+    BpfxUpdateError if the file isn't the shape this was built against."""
+    try:
+        asset_map = data["bsdm"]["assetMap"]
+        media_states_by_id = data["bsdm"]["mediaStates"]["mediaStatesById"]
+        data["bsdm"]["events"]
+        data["bsdm"]["transitions"]["transitionsById"]
+    except (KeyError, TypeError) as e:
+        raise BpfxUpdateError(
+            f"{bpfx_path.name}: missing expected section {e} — not a presentation "
+            "file this app knows how to update."
+        ) from e
+
+    image_assets = [(k, v) for k, v in asset_map.items() if v.get("mediaType") == "Image"]
+    if len(image_assets) != 1:
+        raise BpfxUpdateError(
+            f"{bpfx_path.name}: expected exactly one image asset, found {len(image_assets)}."
+        )
+    asset_id, asset = image_assets[0]
+
+    matching_states = [
+        (mid, ms)
+        for mid, ms in media_states_by_id.items()
+        if ms.get("contentItem", {}).get("assetId") == asset_id
+    ]
+    if len(matching_states) != 1:
+        raise BpfxUpdateError(
+            f"{bpfx_path.name}: expected exactly one mediaState referencing "
+            f"asset {asset_id}, found {len(matching_states)}."
+        )
+    media_state_id, media_state = matching_states[0]
+    return asset_id, asset, media_state_id, media_state
+
+
 def update_presentation(
     bpfx_path: Path,
     new_png_path: Path,
@@ -83,29 +126,9 @@ def update_presentation(
     Raises BpfxUpdateError if the file doesn't have exactly one image asset
     to update (the shape this was built against).
     """
-    data = json.loads(bpfx_path.read_text())
-
-    asset_map = data["bsdm"]["assetMap"]
-    image_assets = [(k, v) for k, v in asset_map.items() if v.get("mediaType") == "Image"]
-    if len(image_assets) != 1:
-        raise BpfxUpdateError(
-            f"{bpfx_path.name}: expected exactly one image asset, found {len(image_assets)}."
-        )
-    asset_id, asset = image_assets[0]
+    data = _load_presentation(bpfx_path)
+    asset_id, asset, media_state_id, media_state = _locate_image(data, bpfx_path)
     old_name = asset["name"]
-
-    media_states_by_id = data["bsdm"]["mediaStates"]["mediaStatesById"]
-    matching_states = [
-        (mid, ms)
-        for mid, ms in media_states_by_id.items()
-        if ms.get("contentItem", {}).get("assetId") == asset_id
-    ]
-    if len(matching_states) != 1:
-        raise BpfxUpdateError(
-            f"{bpfx_path.name}: expected exactly one mediaState referencing "
-            f"asset {asset_id}, found {len(matching_states)}."
-        )
-    media_state_id, media_state = matching_states[0]
 
     new_name = new_png_path.name
     dest_path = local_write_dir / new_name
@@ -130,11 +153,11 @@ def update_presentation(
     media_state["contentItem"]["name"] = new_name
 
     for event in data["bsdm"]["events"].values():
-        if event.get("mediaStateId") == media_state_id and event["name"] == f"{old_name}_ev":
+        if event.get("mediaStateId") == media_state_id and event.get("name") == f"{old_name}_ev":
             event["name"] = f"{new_name}_ev"
 
     for transition in data["bsdm"]["transitions"]["transitionsById"].values():
-        if transition.get("targetMediaStateId") == media_state_id and transition["name"] == f"{old_name}_tr":
+        if transition.get("targetMediaStateId") == media_state_id and transition.get("name") == f"{old_name}_tr":
             transition["name"] = f"{new_name}_tr"
 
     bpfx_path.write_text(json.dumps(data, indent=2))
@@ -156,9 +179,9 @@ def update_week(
     local_write_dir — the PNGs are copied into the same shared folder the
     .bpfx files live in. Returns the list of PNG destination paths written.
     Raises BpfxUpdateError (with all problems listed) if any day's .bpfx is
-    missing or doesn't match the expected single-image-asset shape —
-    nothing is written for any day until every day has been validated, so
-    a partial week never gets half-applied.
+    missing, unreadable, or doesn't match the expected single-image-asset
+    shape — every day's file is fully parsed and checked before anything is
+    written for any day, so a partial week never gets half-applied.
     """
     problems: list[str] = []
     resolved: dict[str, Path] = {}
@@ -166,6 +189,11 @@ def update_week(
         bpfx_path = bpfx_dir / f"Cafe Menu {day_name}.bpfx"
         if not bpfx_path.exists():
             problems.append(f"{bpfx_path.name} not found in {bpfx_dir}")
+            continue
+        try:
+            _locate_image(_load_presentation(bpfx_path), bpfx_path)
+        except BpfxUpdateError as e:
+            problems.append(str(e))
             continue
         resolved[day_name] = bpfx_path
 

@@ -1,4 +1,4 @@
-python-docx
+python-docx>=1.0  # parser.py uses iter_inner_content()
 playwright
 Pillow
 pyinstaller

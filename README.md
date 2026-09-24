@@ -13,13 +13,17 @@ chore into a one-click tool.
 
 ## What it does
 
-1. **Parses** the week's lunch menu from a `.docx` file — handles a
-   Wednesday sushi-only row, Friday's veg/non-veg soup ambiguity, and
-   days that simply skip an item (not every day has every line every
-   week; a missing item is just left off that day's sign).
+1. **Parses** the week's lunch menu from a `.docx` file — plain lines or
+   a Word table — and handles a Wednesday sushi-only row, Friday's
+   veg/non-veg soup ambiguity, office-closed days, and days that simply
+   skip an item (not every day has every line every week; a missing item
+   is just left off that day's sign). Tolerates Word's AutoFormat
+   look-alike characters (non-breaking hyphens/spaces, curly dashes) in
+   labels.
 2. **Renders** five pixel-exact 3840×600px signs (4x supersampled, Lanczos
    downsampled) matching a fixed maroon digital-signage design, with a
-   pre-export check that blocks the export if any text would wrap.
+   pre-export check that blocks the export if any text would wrap or a
+   day's rows wouldn't fit in the sign's height.
 3. **Publishes to BrightSign** two ways:
    - Generates brightAuthor:connected's native schedule file (`.bpsx`)
      from scratch, with each weekday set to recur forever — a one-time
@@ -108,6 +112,8 @@ ditto -c -k --sequesterRsrc --keepParent "dist/The Cafe Menu Sign Generator.app"
 3. Pick **House Special** (maroon, default) or **Lighter Fare** (alt) design.
 4. **Whip Up a Preview** — review all five days on screen. If any label or
    item text is at risk of wrapping, fix the source document and re-parse.
+   A failed re-parse leaves the previous preview (and what Export/Update
+   act on) in place; action buttons are greyed out while a job runs.
 5. **Update This Week's Presentations…** — the actual weekly task. Check
    off which days should get this week's new image (all 5 by default —
    leave a day unchecked if it hasn't aired yet and shouldn't be
@@ -115,8 +121,9 @@ ditto -c -k --sequesterRsrc --keepParent "dist/The Cafe Menu Sign Generator.app"
    weekday, not a separate "this week"/"next week" slot), then point it
    at the shared brightAuthor:connected folder holding the five
    `Cafe Menu <Day>.bpfx` files. This renders the checked days' PNGs and
-   rewrites each presentation to show them. Then in brightAuthor:connected,
-   just hit Publish.
+   rewrites each presentation to show them. Every checked day's `.bpfx`
+   is validated first — if any is missing or malformed, nothing is
+   written for any day. Then in brightAuthor:connected, just hit Publish.
 6. **Recipe (Instructions)** (or Help menu) — the full step-by-step
    walkthrough, including the one-time schedule setup.
 
@@ -137,14 +144,16 @@ Output filenames: `The_Cafe_Menu_<Day>_<YYYY-MM-DD>.png`.
 
 ## Project layout
 
-- `app/parser.py` — reads the `.docx`, extracts Mon–Fri rows, handles the
-  Wednesday sushi line, Friday's veg/non-veg soup ambiguity, and days
-  that skip an item entirely.
+- `app/parser.py` — reads the `.docx` (paragraphs and tables, in document
+  order), extracts Mon–Fri rows, handles the Wednesday sushi line,
+  Friday's veg/non-veg soup ambiguity, office-closed days, and days that
+  skip an item entirely.
 - `app/template.py` — builds the self-contained HTML/CSS per day (fonts
   embedded as base64 data URIs, no external assets, no logo on the sign
   itself).
 - `app/renderer.py` — headless-Chromium screenshot at 4x scale, Lanczos
-  downsample to exact 3840×600, plus the pre-export wrap-detection check.
+  downsample to exact 3840×600, plus the pre-export layout check (text
+  wrapping and rows overflowing the sign's height).
 - `app/app.py` — Tkinter GUI (file picker, date, variant, preview, export,
   in-app help). Forces a fixed light color theme regardless of macOS's
   dark/light mode setting.
