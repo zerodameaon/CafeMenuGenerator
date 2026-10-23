@@ -180,6 +180,95 @@ plain tk widget) rather than left to Aqua. Both pass WCAG AA contrast
 - The sign images themselves are unaffected; they have their own fixed
   "House Special"/"Lighter Fare" designs.
 
+### Holiday themes (2026-10-23)
+
+Sign designs live in `THEMES` in `template.py` (colors, display/body fonts,
+subtitle). `main` and `alt` were moved into it unchanged — verified
+pixel-identical against the previous template on a full test week. The
+first holiday theme is `halloween` ("Fright Bites" in the GUI): Nosifer
+(letters drip blood) on **everything** — logo, day name, CLOSED, labels,
+items, subtitle and date — with the logo's "CAFE", the day name and
+CLOSED in blood red; plus a moon, bats and a corner cobweb from
+`decorations.py`. History: it first used Creepster labels and Griffy items
+for legibility; the user chose all-Nosifer after seeing both. Nosifer is
+wide and caps-only, so the theme sets `label_scale=0.8` and
+`item_scale=0.72` (items wrapped at 1.0 and "VEG SOUP DU JOUR" wrapped at
+label size 1.0); `date_font` overrides the date's Libre Franklin. The
+Creepster/Griffy font files are still in `app/fonts/` but unused. An
+earlier version dripped blood from the sign's top edge instead; replaced
+by the dripping lettering at the user's request.
+
+- Decorations are absolutely positioned, so they never affect layout or
+  the wrap/overflow check. Keep new ones that way.
+- Holiday fonts are single-weight, so `font-synthesis: none` is set to stop
+  Chromium faking bold/italic on them (no effect on Libre Franklin, which
+  has real weights). Their OFL licences sit next to them in `app/fonts/`.
+- Holidays are applied **per day**, not as a whole-week Flavor: the cafe
+  wants e.g. Halloween only on the day itself. A holiday is hidden until
+  ticked in the **Holidays** menu (on/off saved as `holiday_<variant>` in
+  `~/.cafe_menu_brightsign_player.json`); it then shows a "… on: Mon Tue
+  Wed Thu Fri" checkbox row under Flavor. `App._variants_by_day()` turns
+  that into a day → design map (Flavor for unticked days), which preview,
+  export, Update and Push all use; `render_days()` accepts either a single
+  variant or that map. The day ticks are deliberately not saved between
+  launches, since they're a per-week choice.
+- **Launch reminder:** `seasonal.upcoming_reminder()` finds a holiday whose
+  sign day is within the next 14 days and `App._show_holiday_reminder()`
+  shows a banner. Sign day = the holiday on a weekday, else the Friday
+  before. A Sunday holiday also goes to the Friday before, not the Monday
+  after: the user wants it shown before the holiday, not after it's over.
+  "Use It on …" switches the holiday on, and ticks the day only if the
+  Starting Monday is that day's week (otherwise it would land on the wrong
+  week's menu); if not, the status line says which week to tick it for.
+- Second theme: `thanksgiving` ("Gobble Goodies"): roasted-brown
+  background, Rye (wood-type) for logo/day/labels/CLOSED, Bree Serif for
+  items, falling maple/elm leaves in the brand column and the top-right
+  corner. The office is closed on Thanksgiving and the Friday after, so
+  its `Holiday` sets
+  `office_closed=True` and `sign_day()` moves it to the weekday before
+  (Wednesday); the banner already says "the cafe's closed" in that case.
+- Third theme: `veterans` ("Stars & Stripes", Nov 11, office open): navy,
+  Stardos Stencil Bold for logo/day/labels/CLOSED, Libre Franklin items,
+  a star cluster in the brand column and a red-white stripe ribbon along
+  the bottom edge. Its GUI name skips the food pun on purpose, out of
+  respect for the day.
+- `christmas` ("Sleigh Bites"): evergreen, Mountains of Christmas
+  (Apache-2.0 licence, not OFL — `MountainsofChristmas-LICENSE.txt`) for
+  logo/day/labels/CLOSED, Libre Franklin items, snowflakes in the brand
+  column and baubles hanging into the top-right corner. `newyear` ("Toast
+  of the Town"): midnight/champagne/gold, Limelight (Art Deco), fireworks
+  and corner confetti. Both are `office_closed=True`, so they land on the
+  weekday before (Dec 24 / Dec 31 in 2026). New Year's sign day is in the
+  previous December, which `upcoming_reminder()` handles by checking next
+  year's date too.
+- **Full calendar (2026-10-23):** 20 holidays in `seasonal.HOLIDAYS`, in
+  calendar order (that's the Holidays menu order): New Year's, MLK Day,
+  Lunar New Year, Mardi Gras, Valentine's, Presidents' Day, St. Patrick's,
+  Easter, Cinco de Mayo, Mother's Day, Memorial Day, Father's Day,
+  Juneteenth, July 4th, Labor Day, Halloween, Veterans Day, Thanksgiving,
+  Hanukkah, Christmas. Rule-based dates use `_nth_weekday()` and
+  `_easter()`; **Lunar New Year and Hanukkah use lookup tables that run out
+  after 2030** (`date_in` returns None past them, and the reminder skips
+  that year). Office assumed closed (sign on the weekday before) for New
+  Year's, Memorial Day, July 4th, Labor Day, Thanksgiving, Christmas; open
+  for MLK, Presidents' Day, Juneteenth, Veterans Day. Not done on purpose:
+  Diwali, Rosh Hashanah, Eid (moon dates, would need tables) and
+  Columbus/Indigenous Peoples' Day.
+- Solemn days (MLK, Memorial Day, Juneteenth, Veterans Day) have no food pun
+  in their GUI names and use restrained decorations.
+- Decorations live in `app/decorations.py` (moved out of `template.py`);
+  `decorations_html()` dispatches through `_DECORATORS`. Most themes reuse
+  `_BRAND_SPOTS` (the empty middle of the brand column) and `_CORNER_SPOTS`
+  (top-right corner) via `_place()`.
+- Presidents' Day labels stay at normal size: IM Fell's wide caps wrapped
+  "VEG SOUP DU JOUR" at 1.15×. Valentine's adds space under the day name
+  for Pacifico's descenders.
+- Adding a holiday = a `THEMES` entry (+ `extra_fonts` if any), optional
+  decorations in `decorations.py`, and a `Holiday` in `seasonal.HOLIDAYS` with a year → date
+  function (that one entry adds the Holidays-menu checkbox, its day row and
+  the reminder). Run a strict
+  `render_days` over a full week, including a 6-row Wednesday, before shipping.
+
 ### Food-pun copy voice
 
 By explicit request, all user-facing GUI copy (button labels, status

@@ -47,9 +47,11 @@ class RenderValidationError(Exception):
 def render_days(
     days: list[DayMenu],
     out_dir: Path,
-    variant: str = "main",
+    variant: str | dict[str, str] = "main",
     strict: bool = True,
 ) -> list[RenderResult]:
+    """`variant` is one design for every day, or a day name → design map
+    (so a holiday design can go on just some days)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     results: list[RenderResult] = []
 
@@ -61,7 +63,8 @@ def render_days(
                 device_scale_factor=SCALE,
             )
             for day in days:
-                html_str = build_day_html(day, variant=variant)
+                day_variant = variant if isinstance(variant, str) else variant[day.day_name]
+                html_str = build_day_html(day, variant=day_variant)
                 page.set_content(html_str, wait_until="load")
                 page.evaluate("document.fonts.ready")
 

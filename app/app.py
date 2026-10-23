@@ -49,13 +49,14 @@ sys.path.insert(0, str(app_dir))
 
 BRIGHTSIGN_HELP_DIR = app_dir / "brightsign_help"
 
-from parser import parse_menu_docx, MenuParseError, DayMenu, format_month_day
+from parser import parse_menu_docx, MenuParseError, DayMenu, DAY_NAMES, format_month_day
 from renderer import render_days, render_preview_png_bytes, RenderValidationError
 import brightsign_client
 import bpsx_schedule
 import bpfx_update
 import credentials
 import player_push
+from seasonal import HOLIDAYS, upcoming_reminder
 
 PREVIEW_W = 760
 
@@ -144,6 +145,17 @@ INSTRUCTIONS_TEXT = """HOW TO COOK UP MENU SIGNS, STEP BY STEP
    "House Special" is the maroon design used week-to-week. "Lighter
    Fare" is the inverted light version — only switch if you specifically
    need it.
+   Holiday designs (e.g. "Fright Bites" for Halloween) are hidden until
+   you switch them on in the Holidays menu (the app remembers that).
+   A row then appears under Flavor — tick the days that should get the
+   holiday design; the other days keep the Flavor above. Then Whip Up a
+   Preview again to check. Once the holiday is over, untick it in the
+   Holidays menu and push again so those days go back to normal.
+   When a holiday with its own design is less than two weeks away, a
+   "Seasonal special" banner at the top of the app says which day to use
+   it on (the holiday itself, or the Friday before if it lands on a
+   weekend). "Use It on …" switches it on and ticks that day for you.
+   If the office celebrates on an earlier day, tick that day as well.
 
 4. Whip Up a Preview
    Reads the document and renders all five days on screen at reduced
@@ -403,10 +415,11 @@ def _load_player_config() -> dict:
 
 
 def _save_player_config(**fields: str) -> None:
-    """Merges `fields` (any of ip, port, username, storage) into the saved
-    config, keeping whatever else is already there. Deliberately never saves
-    the password — this file isn't meant to be a credential store. IP, port,
-    username, and storage are low-stakes convenience only."""
+    """Merges `fields` (any of ip, port, username, storage, or a
+    holiday_<variant> on/off flag) into the saved config, keeping whatever
+    else is already there. Deliberately never saves the password — this file
+    isn't meant to be a credential store. Everything in it is low-stakes
+    convenience only."""
     import json
     cfg = _load_player_config()
     cfg.update(fields)
@@ -604,6 +617,17 @@ class App:
         # export/update buttons always act on what's actually shown on screen.
         self.days: list[DayMenu] | None = None
         self.variant = StringVar(value="main")
+        # Which holiday flavors are switched on (Holidays menu). Remembered
+        # between launches in the player config file, as "1"/"0" strings.
+        cfg = _load_player_config()
+        self.holiday_enabled = {
+            h.variant: BooleanVar(value=cfg.get(f"holiday_{h.variant}") == "1") for h in HOLIDAYS
+        }
+        # Which days get each holiday design. Not remembered: it's a
+        # per-week choice, so every launch starts with none ticked.
+        self.holiday_days = {
+            h.variant: {day: BooleanVar(value=False) for day in DAY_NAMES} for h in HOLIDAYS
+        }
         self._busy = False
 
         self._build_menu()
@@ -650,6 +674,78 @@ class App:
             _recolor_tree(self.root, old, _palette)
         self.root.after(2000, self._watch_appearance)
 
+    def _toggle_holiday(self, value: str):
+        _save_player_config(**{f"holiday_{value}": "1" if self.holiday_enabled[value].get() else "0"})
+        self._show_holiday_flavors()
+
+    def _show_holiday_flavors(self):
+        """Shows a day-picker row under the Flavor buttons for each holiday
+        that's switched on in the Holidays menu, and hides the rest."""
+        for row in self.holiday_rows.values():
+            row.pack_forget()
+        for h in HOLIDAYS:
+            if self.holiday_enabled[h.variant].get():
+                self.holiday_rows[h.variant].pack(side="top", anchor="w", pady=(6, 0))
+
+    def _variants_by_day(self) -> dict[str, str]:
+        """Day name → sign design: the Flavor choice, swapped for a holiday
+        design on the days ticked for it. A switched-off holiday's ticks are
+        ignored. Main thread only (reads Tk variables)."""
+        variants = {day: self.variant.get() for day in DAY_NAMES}
+        for h in HOLIDAYS:
+            if self.holiday_enabled[h.variant].get():
+                for day, var in self.holiday_days[h.variant].items():
+                    if var.get():
+                        variants[day] = h.variant
+        return variants
+
+    def _show_holiday_reminder(self, parent):
+        """At launch: if a holiday with its own design is coming up soon, a
+        banner suggesting it for the right day, with a button that sets it up."""
+        reminder = upcoming_reminder(date.today())
+        if reminder is None:
+            return
+        h, day = reminder.holiday, reminder.sign_day
+        if day == reminder.holiday_date:
+            when = f"{h.name} is {day:%A, %B} {day.day}"
+        else:
+            when = (f"{h.name} is {reminder.holiday_date:%A, %B} {reminder.holiday_date.day} "
+                    f"(the cafe's closed), so its last service before is {day:%A, %B} {day.day}")
+        banner = Frame(parent, bg=PANEL_BG, padx=12, pady=8)
+        banner.pack(fill="x", padx=16, pady=(12, 0))
+        Label(
+            banner, text=f"Seasonal special: {when}. You may want the {h.flavor_name} design on that day. "
+                         f"If the office is celebrating {h.name} on an earlier day, it can go on that "
+                         f"day too: tick it in the {h.flavor_name} row under Flavor.",
+            bg=PANEL_BG, fg=FG, wraplength=600, justify="left",
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Button(banner, text="Not Now", command=banner.destroy).pack(side="right")
+        ttk.Button(
+            banner, text=f"Use It on {day:%A}",
+            command=lambda: (self._apply_holiday_reminder(reminder), banner.destroy()),
+        ).pack(side="right", padx=(8, 8))
+
+    def _apply_holiday_reminder(self, reminder):
+        """Switches the holiday on and ticks its day — but only ticks it if
+        the Starting Monday is that day's week, since the ticks apply to
+        whichever week is being prepared."""
+        h, day = reminder.holiday, reminder.sign_day
+        self.holiday_enabled[h.variant].set(True)
+        self._toggle_holiday(h.variant)
+        week_monday = day - timedelta(days=day.weekday())
+        try:
+            start = date.fromisoformat(self.date_var.get().strip())
+        except ValueError:
+            start = None
+        if start == week_monday:
+            self.holiday_days[h.variant][day.strftime("%A")].set(True)
+            self.status_label.config(
+                text=f"{h.flavor_name} is on {day:%A}. Whip Up a Preview to see it.", fg=GOOD_FG)
+        else:
+            self.status_label.config(
+                text=f"{h.flavor_name} is switched on. Tick {day:%A} when you make the menu "
+                     f"for the week of {week_monday:%B} {week_monday.day}.", fg=MUTED_FG)
+
     def _build_menu(self):
         menubar = Menu(self.root)
 
@@ -660,6 +756,14 @@ class App:
         menubar.add_cascade(label="Advanced", menu=advanced_menu)
         self.advanced_menu = advanced_menu
 
+        holidays_menu = Menu(menubar, tearoff=False)
+        for h in HOLIDAYS:
+            holidays_menu.add_checkbutton(
+                label=f"Serve {h.flavor_name}", variable=self.holiday_enabled[h.variant],
+                command=lambda v=h.variant: self._toggle_holiday(v),
+            )
+        menubar.add_cascade(label="Holidays", menu=holidays_menu)
+
         help_menu = Menu(menubar, tearoff=False)
         help_menu.add_command(label="Chef's Instructions", command=lambda: show_instructions(self.root))
         help_menu.add_command(label="Recipe (Instructions)", command=lambda: show_brightsign_instructions(self.root))
@@ -669,6 +773,8 @@ class App:
         self.root.config(menu=menubar)
 
     def _build_ui(self):
+        banner_slot = Frame(self.root, bg=BG)
+        banner_slot.pack(fill="x")
         top = Frame(self.root, padx=16, pady=16, bg=BG)
         top.pack(fill="x")
 
@@ -698,17 +804,30 @@ class App:
         Label(top, text="Flavor (design):", bg=BG, fg=FG).grid(row=3, column=0, sticky="w", pady=(10, 0))
         variant_frame = Frame(top, bg=BG)
         variant_frame.grid(row=3, column=1, sticky="w", pady=(10, 0))
-        ttk.Radiobutton(variant_frame, text="House Special (maroon)", variable=self.variant, value="main").pack(
+        base_row = Frame(variant_frame, bg=BG)
+        base_row.pack(side="top", anchor="w")
+        ttk.Radiobutton(base_row, text="House Special (maroon)", variable=self.variant, value="main").pack(
             side="left"
         )
-        ttk.Radiobutton(variant_frame, text="Lighter Fare (alt)", variable=self.variant, value="alt").pack(
+        ttk.Radiobutton(base_row, text="Lighter Fare (alt)", variable=self.variant, value="alt").pack(
             side="left", padx=10
         )
+        self.holiday_rows = {}
+        for h in HOLIDAYS:
+            row = Frame(variant_frame, bg=BG)
+            Label(row, text=f"{h.flavor_name} on:", bg=BG, fg=FG).pack(side="left")
+            for day in DAY_NAMES:
+                ttk.Checkbutton(row, text=day[:3], variable=self.holiday_days[h.variant][day]).pack(
+                    side="left", padx=(8, 0)
+                )
+            self.holiday_rows[h.variant] = row
+        self._show_holiday_flavors()
 
         self.preview_btn = ttk.Button(top, text="Whip Up a Preview", command=self.parse_and_preview)
         self.preview_btn.grid(row=4, column=0, sticky="w", pady=(14, 0))
         self.status_label = Label(top, text="", bg=BG, fg=MUTED_FG)
         self.status_label.grid(row=4, column=1, sticky="w", pady=(14, 0))
+        self._show_holiday_reminder(banner_slot)
 
         # Scrollable preview area
         container = Frame(self.root, bg=BG)
@@ -790,17 +909,17 @@ class App:
 
         self.status_label.config(text="Plating the preview…", fg=MUTED_FG)
         self.root.update_idletasks()
-        # Tk isn't thread-safe — read the variant here on the main thread
-        # and hand it to the worker rather than calling .get() from there.
+        # Tk isn't thread-safe — read the variants here on the main thread
+        # and hand them to the worker rather than calling .get() from there.
         threading.Thread(
-            target=self._render_preview_thread, args=(new_days, self.variant.get()), daemon=True
+            target=self._render_preview_thread, args=(new_days, self._variants_by_day()), daemon=True
         ).start()
 
-    def _render_preview_thread(self, new_days: list[DayMenu], variant: str):
+    def _render_preview_thread(self, new_days: list[DayMenu], variants: dict[str, str]):
         try:
             previews = []
             for day in new_days:
-                png_bytes = render_preview_png_bytes(day, variant=variant)
+                png_bytes = render_preview_png_bytes(day, variant=variants[day.day_name])
                 previews.append((day, png_bytes))
             self.root.after(0, lambda: self._show_previews(new_days, previews))
         except Exception as e:
@@ -997,15 +1116,15 @@ class App:
             self.root.update_idletasks()
             threading.Thread(
                 target=self._update_presentations_thread,
-                args=(bpfx_dir, selected_days, self.variant.get()), daemon=True,
+                args=(bpfx_dir, selected_days, self._variants_by_day()), daemon=True,
             ).start()
 
         ttk.Button(win, text="Update", command=do_update).pack(pady=(16, 12))
 
-    def _update_presentations_thread(self, bpfx_dir: Path, selected_days: list[DayMenu], variant: str):
+    def _update_presentations_thread(self, bpfx_dir: Path, selected_days: list[DayMenu], variants: dict[str, str]):
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                results = render_days(selected_days, Path(tmp), variant=variant, strict=True)
+                results = render_days(selected_days, Path(tmp), variant=variants, strict=True)
                 day_to_png = {r.day_name: r.png_path for r in results}
                 written = bpfx_update.update_week(bpfx_dir, day_to_png)
             names = "\n".join(p.name for p in written)
@@ -1085,14 +1204,14 @@ class App:
             self._set_busy(True)
             self.root.update_idletasks()
             threading.Thread(
-                target=self._export_thread, args=(Path(out_dir), selected_days, self.variant.get()), daemon=True
+                target=self._export_thread, args=(Path(out_dir), selected_days, self._variants_by_day()), daemon=True
             ).start()
 
         ttk.Button(win, text="Export", command=do_export).pack(pady=(16, 12))
 
-    def _export_thread(self, out_dir: Path, selected_days: list[DayMenu], variant: str):
+    def _export_thread(self, out_dir: Path, selected_days: list[DayMenu], variants: dict[str, str]):
         try:
-            results = render_days(selected_days, out_dir, variant=variant, strict=True)
+            results = render_days(selected_days, out_dir, variant=variants, strict=True)
             names = "\n".join(r.png_path.name for r in results)
             self.root.after(
                 0,
@@ -1250,21 +1369,21 @@ class App:
             player = brightsign_client.Player(ip, port, username, password)
             threading.Thread(
                 target=self._push_thread,
-                args=(player, selected_days, self.variant.get(),
+                args=(player, selected_days, self._variants_by_day(),
                       lambda: credentials.save(ip, username, password)),
                 daemon=True,
             ).start()
 
         ttk.Button(win, text="Push", command=do_push).pack(pady=(16, 12))
 
-    def _push_thread(self, player, selected_days: list[DayMenu], variant: str, remember_password):
+    def _push_thread(self, player, selected_days: list[DayMenu], variants: dict[str, str], remember_password):
         def progress(msg: str):
             self.root.after(0, lambda: self.status_label.config(text=msg, fg=MUTED_FG))
 
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 progress("Rendering the signs…")
-                results = render_days(selected_days, Path(tmp), variant=variant, strict=True)
+                results = render_days(selected_days, Path(tmp), variant=variants, strict=True)
                 day_to_png = {r.day_name: r.png_path for r in results}
                 changes, backup = player_push.push(player, day_to_png, progress=progress)
             # Only now — the player has accepted this password — is it worth
