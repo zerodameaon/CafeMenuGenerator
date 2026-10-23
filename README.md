@@ -24,7 +24,9 @@ chore into a one-click tool.
 2. **Renders** five pixel-exact 3840×600px signs (4x supersampled, Lanczos
    downsampled) matching a fixed maroon digital-signage design, with a
    pre-export check that blocks the export if any text would wrap or a
-   day's rows wouldn't fit in the sign's height.
+   day's rows wouldn't fit in the sign's height. Twenty **holiday
+   designs** (New Year's through Christmas) can go on chosen days instead,
+   and the app reminds you when one is coming up.
 3. **Publishes to BrightSign** three ways:
    - **Push to Player** — sends the new PNGs straight to the player over
      its Local DWS API (HTTPS on the local network) and restarts it, no
@@ -162,6 +164,51 @@ ditto -c -k --sequesterRsrc --keepParent "dist/The Cafe Menu Sign Generator.app"
 - **Recipe (Instructions)** (or Help menu) — the full step-by-step
   walkthrough.
 
+### Holiday designs
+
+Each holiday has its own sign design: colors, lettering and decorations
+(falling leaves for Thanksgiving, a menorah for Hanukkah, fireworks for the
+Fourth of July, and so on). They're hidden until you need one, so none can
+be picked by accident.
+
+1. **Holidays** menu → tick the holiday. A row of day checkboxes appears
+   under the Flavor buttons (e.g. "Fright Bites (Halloween) on: Mon Tue
+   Wed Thu Fri"). The app remembers which holidays are switched on.
+2. Tick the day(s) that should get the holiday design. Every other day
+   keeps the House Special / Lighter Fare look. Day ticks aren't saved,
+   since they only apply to the week you're preparing.
+3. **Whip Up a Preview**, then push or export as usual.
+4. After the holiday, untick it in the **Holidays** menu and push again so
+   those days go back to normal.
+
+**Reminder:** when you open the app within two weeks of a holiday, a
+banner names the day to use and offers **Use It on …**, which switches
+the holiday on and ticks that day (if the Starting Monday is that week).
+
+**Which day it suggests:** the holiday itself if it's a weekday; the
+Friday before if it falls on a weekend; and the last open weekday before
+it for days the office is closed. That means Wednesday for Thanksgiving,
+and the day before New Year's, Memorial Day, the Fourth of July, Labor
+Day and Christmas. You can always tick other days too, e.g. if the office
+celebrates early.
+
+| Holiday | Design | Holiday | Design |
+|---|---|---|---|
+| New Year's | Toast of the Town | Memorial Day | We Remember |
+| MLK Day | Dream | Father's Day | Grill Master |
+| Lunar New Year | Lucky Noodles | Juneteenth | Freedom Day |
+| Mardi Gras | Let the Good Times Roll | Fourth of July | Red, White & Brunch |
+| Valentine's Day | Sweetheart Specials | Labor Day | Labor of Loaf |
+| Presidents' Day | Commander in Cheese | Halloween | Fright Bites |
+| St. Patrick's Day | Pot of Gold | Veterans Day | Stars & Stripes |
+| Easter | Egg-cellent Eats | Thanksgiving | Gobble Goodies |
+| Cinco de Mayo | Fiesta Fare | Hanukkah | Latke Love |
+| Mother's Day | Brunch for Mom | Christmas | Sleigh Bites |
+
+Lunar New Year and Hanukkah follow the moon, so their dates come from a
+table that runs through 2030; it needs extending before then (see
+`app/seasonal.py`).
+
 ### brightAuthor:connected — one-time setup, and the old way
 
 Push to Player swaps the images inside presentations that are already
@@ -199,14 +246,21 @@ Output filenames: `The_Cafe_Menu_<Day>_<YYYY-MM-DD>.png`.
   skip an item entirely.
 - `app/template.py` — builds the self-contained HTML/CSS per day (fonts
   embedded as base64 data URIs, no external assets, no logo on the sign
-  itself).
+  itself). Every design's colors and fonts are in its `THEMES` table.
+- `app/seasonal.py` — the holiday list: dates, the day each design should
+  go on, and the launch reminder.
+- `app/decorations.py` — the holiday decorations (leaves, snowflakes,
+  fireworks, …) as inline SVG/CSS, positioned so they never affect the
+  layout check.
 - `app/renderer.py` — headless-Chromium screenshot at 4x scale, Lanczos
   downsample to exact 3840×600, plus the pre-export layout check (text
   wrapping and rows overflowing the sign's height).
 - `app/app.py` — Tkinter GUI (file picker, date, variant, preview, export,
   in-app help). Follows macOS's Light/Dark appearance with its own
   light and dark palettes, switching live if the setting changes.
-- `app/fonts/` — bundled Libre Franklin variable font files (roman + italic).
+- `app/fonts/` — bundled Libre Franklin variable font files (roman +
+  italic), plus the holiday lettering fonts, each with its licence file
+  (SIL Open Font License; Mountains of Christmas is Apache 2.0).
 - `app/brightsign_help/` — screenshots shown in the in-app "Recipe
   (Instructions)" panel.
 - `app/brightsign_client.py` — talks to a BrightSign player's Local DWS
