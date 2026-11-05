@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import html
 import sys
+from datetime import date
 from pathlib import Path
 
 from decorations import decorations_html
@@ -283,6 +284,20 @@ def _day_type(day_name: str) -> str:
     return "standard"
 
 
+# The panel shows each day's image for a whole day, so the fixed lines
+# (brand divider, row dividers, label column) would otherwise sit on the
+# same pixels day after day and risk LCD image retention. Nudge the brand
+# and menu columns a few pixels per sign, cycling by date so a weekday also
+# lands somewhere different from one week to the next. Too small to notice
+# on the sign; the padding absorbs it. Decorations don't move, so the ones
+# anchored to the panel edge stay flush with it.
+_RETENTION_SHIFTS = ((0, 0), (6, 4), (-6, 4), (-6, -4), (6, -4))
+
+
+def _retention_shift(menu_date: date) -> tuple[int, int]:
+    return _RETENTION_SHIFTS[menu_date.toordinal() % len(_RETENTION_SHIFTS)]
+
+
 def _font_face_css(extra_fonts: tuple[str, ...] = ()) -> str:
     def b64(fname: str) -> str:
         return base64.b64encode((FONTS_DIR / fname).read_bytes()).decode("ascii")
@@ -314,8 +329,9 @@ def _font_face_css(extra_fonts: tuple[str, ...] = ()) -> str:
 """
 
 
-def _base_css(t: dict) -> str:
+def _base_css(t: dict, day: DayMenu) -> str:
     """Page + brand column CSS shared by the menu and CLOSED layouts."""
+    dx, dy = _retention_shift(day.menu_date)
     return f"""
 {_font_face_css(t.get("extra_fonts", ()))}
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -343,6 +359,7 @@ html, body {{
   font-style: italic; font-weight: 600; font-size: 36px; color: {t["muted"]};
   letter-spacing: 0.04em; margin-top: 10px;
 }}
+.brand, .menu {{ transform: translate({dx}px, {dy}px); }}
 .spacer {{ flex: 1; }}
 .day-name {{
   font-family: {t.get("heading_font", t["display_font"])};
@@ -387,7 +404,7 @@ def build_day_html(day: DayMenu, variant: str = "main") -> str:
 <head>
 <meta charset="utf-8">
 <style>
-{_base_css(t)}
+{_base_css(t, day)}
 .menu {{
   flex: 1;
   padding: 40px 64px 32px 64px;
@@ -437,7 +454,7 @@ def build_day_html(day: DayMenu, variant: str = "main") -> str:
 <head>
 <meta charset="utf-8">
 <style>
-{_base_css(t)}
+{_base_css(t, day)}
 .menu {{
   flex: 1;
   padding: 40px 64px 32px 64px;
