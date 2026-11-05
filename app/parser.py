@@ -19,6 +19,12 @@ LABEL_MAP = {
     "main entree": "Main Entrée",
     "veggie entrée": "Veggie Entrée",
     "veggie entree": "Veggie Entrée",
+    # One dish for both entrée slots (e.g. Thursday's dim sum). Shown without
+    # "Entrée": the full "MAIN & VEGGIE ENTRÉE" wraps in the 360px label column.
+    "main & veggie entrée": "Main & Veggie",
+    "main & veggie entree": "Main & Veggie",
+    "main and veggie entrée": "Main & Veggie",
+    "main and veggie entree": "Main & Veggie",
 }
 
 
@@ -37,6 +43,7 @@ class DayMenu:
     rows: list[MenuRow] = field(default_factory=list)
     closed: bool = False
     closed_reason: str = ""
+    skipped_lines: list[str] = field(default_factory=list)
 
 
 class MenuParseError(Exception):
@@ -149,7 +156,10 @@ def parse_menu_docx(path: str, start_monday: date) -> list[DayMenu]:
             ))
             continue
         rows = _parse_day_block(day_name, day_blocks[day_name])
-        days.append(DayMenu(day_name=day_name, menu_date=menu_date, rows=rows))
+        days.append(DayMenu(
+            day_name=day_name, menu_date=menu_date, rows=rows,
+            skipped_lines=_skipped_lines(day_name, day_blocks[day_name]),
+        ))
 
     return days
 
@@ -159,6 +169,21 @@ def _is_menu_line(line: str) -> bool:
         return True
     split = _split_label_item(line)
     return split is not None and _key(split[0]) in LABEL_MAP
+
+
+def _skipped_lines(day_name: str, block_lines: list[str]) -> list[str]:
+    """Lines in a day's block that won't reach its sign, so the app can warn
+    instead of a dish silently vanishing. The "All menu selections are locally
+    sourced" footer lands in the last day's block every week and isn't menu
+    content, so it's excluded or this would fire on every document."""
+    skipped = []
+    for line in block_lines:
+        if "locally sourced" in _key(line):
+            continue
+        is_sushi = _key(line) == "assorted sushi"
+        if not _is_menu_line(line) or (is_sushi and day_name != "Wednesday"):
+            skipped.append(line)
+    return skipped
 
 
 def _closed_reason(block_lines: list[str]) -> str | None:
@@ -235,6 +260,10 @@ def _parse_day_block(day_name: str, block_lines: list[str]) -> list[MenuRow]:
     veggie_entree = parsed.get("Veggie Entrée")
     if veggie_entree is not None:
         rows.append(MenuRow(label="Veggie Entrée", item=veggie_entree, emphasis=True))
+
+    combined_entree = parsed.get("Main & Veggie")
+    if combined_entree is not None:
+        rows.append(MenuRow(label="Main & Veggie", item=combined_entree, emphasis=True))
 
     if day_name == "Wednesday" and has_sushi:
         rows.append(MenuRow(label="Assorted Sushi", item="Assorted Sushi", muted=True))

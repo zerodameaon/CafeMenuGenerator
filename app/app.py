@@ -124,6 +124,9 @@ INSTRUCTIONS_TEXT = """HOW TO COOK UP MENU SIGNS, STEP BY STEP
        Non-Vegetarian Soup Du Jour: <item>
        Main Entrée: <item>
        Veggie Entrée: <item>
+   One dish can cover both entrées with "Main & Veggie Entrée: <item>".
+   Any other line under a day isn't put on the sign; the preview warns you
+   and lists them, so check that list before sending the menu out.
    Wednesday can additionally have a standalone "Assorted Sushi" line.
    Not every day needs every line — a day can skip a soup, an entrée,
    etc., and that row is simply left off that day's sign. Friday usually
@@ -402,6 +405,19 @@ def show_brightsign_instructions(root: Tk):
 
 
 PLAYER_CONFIG_PATH = Path.home() / ".cafe_menu_brightsign_player.json"
+
+
+def _skipped_lines_warning(days: list[DayMenu]) -> str | None:
+    """Popup text listing document lines missing from the signs, or None."""
+    found = [f"{day.day_name}: {line}" for day in days for line in day.skipped_lines]
+    if not found:
+        return None
+    return (
+        "These lines from the document aren't on the signs:\n\n"
+        + "\n".join(found)
+        + "\n\nIf one of them is a menu item, change it in the document to a "
+        "standard label (like \"Main Entrée: ...\") and preview again."
+    )
 
 
 def _load_player_config() -> dict:
@@ -968,6 +984,11 @@ class App:
         self.days = new_days
         self.status_label.config(text="Fresh off the grill — give it a taste-test before you plate it up.", fg=GOOD_FG)
         self._set_busy(False)
+
+        warning = _skipped_lines_warning(new_days)
+        if warning:
+            self.status_label.config(text="Preview's up, but some lines didn't make the sign.", fg=BAD_FG)
+            messagebox.showwarning("Something Fell Off the Plate", warning)
 
     def generate_schedule(self):
         if not self.days:

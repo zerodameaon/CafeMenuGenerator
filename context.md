@@ -103,6 +103,21 @@ or item text via `parser.py`'s output in a scratch script, run it through
 actually raised — don't just trust that the code "looks right." This
 bit us once already.
 
+### Combined "Main & Veggie Entrée" line (2026-11-05)
+
+The Nov 2-6 document's Thursday had `Main & Veggie Entrée: Assorted Dim Sum`
+instead of separate lines. That label wasn't in `LABEL_MAP`, and unrecognized
+labels are skipped silently, so the dish vanished from the sign. It now
+parses to one emphasized row labeled `Main & Veggie`. "Entrée" is deliberately
+dropped from the sign: `MAIN & VEGGIE ENTRÉE` wraps in the 360px label column
+and fails `render_days(strict=True)`.
+
+To catch the next new label, `parse_menu_docx` records any line that won't
+reach the sign in `DayMenu.skipped_lines`, and the preview shows them in a
+warning popup (it doesn't block export). The weekly "locally sourced" footer
+is excluded because it lands in Friday's block in every real document; closed
+days are excluded because their block's text is the closure notice.
+
 ### Missing menu items are dropped, not errors (2026-08-28)
 
 `parser.py`'s `_parse_day_block()` originally treated every field
