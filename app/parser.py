@@ -1,6 +1,7 @@
 """Parse the weekly cafe menu .docx into structured day data."""
 from __future__ import annotations
 
+import dataclasses
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -275,3 +276,20 @@ def _parse_day_block(day_name: str, block_lines: list[str]) -> list[MenuRow]:
         )
 
     return rows
+
+
+def apply_row_edits(day: DayMenu, edits: dict[str, str]) -> DayMenu:
+    """A copy of `day` with hand edits applied: `edits` maps a row's label to
+    its replacement item text, and an empty replacement removes the row. Labels
+    not on the day are ignored, so an edit made for one document can't break
+    another. Edits live apart from the parsed menu so a re-preview can re-apply
+    them, and "reset" is just dropping them."""
+    rows = []
+    for row in day.rows:
+        if row.label not in edits:
+            rows.append(row)
+            continue
+        item = edits[row.label].strip()
+        if item:
+            rows.append(dataclasses.replace(row, item=item))
+    return dataclasses.replace(day, rows=rows)

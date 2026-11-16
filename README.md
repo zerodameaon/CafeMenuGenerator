@@ -27,6 +27,9 @@ chore into a one-click tool.
    day's rows wouldn't fit in the sign's height. Twenty **holiday
    designs** (New Year's through Christmas) can go on chosen days instead,
    and the app reminds you when one is coming up.
+   After a preview, **Edit Items…** on any day changes one line of that day's
+   sign by hand (clear a line to drop it); edits survive re-previewing the same
+   document and week.
 3. **Publishes to BrightSign** three ways:
    - **Push to Player** — sends the new PNGs straight to the player over
      its Local DWS API (HTTPS on the local network) and restarts it, no

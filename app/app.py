@@ -49,7 +49,7 @@ sys.path.insert(0, str(app_dir))
 
 BRIGHTSIGN_HELP_DIR = app_dir / "brightsign_help"
 
-from parser import parse_menu_docx, MenuParseError, DayMenu, DAY_NAMES, format_month_day
+from parser import parse_menu_docx, MenuParseError, DayMenu, DAY_NAMES, format_month_day, apply_row_edits
 from renderer import render_days, render_preview_png_bytes, RenderValidationError
 import brightsign_client
 import bpsx_schedule
@@ -632,6 +632,14 @@ class App:
         # Only ever set to a parse whose preview rendered successfully, so the
         # export/update buttons always act on what's actually shown on screen.
         self.days: list[DayMenu] | None = None
+        # What the document said, before any hand edits (see Edit Items…), and
+        # the edits themselves: day name → {row label → new item text, "" =
+        # remove the row}. self.days is always parsed days with edits applied.
+        self._parsed_days: list[DayMenu] | None = None
+        self.edits: dict[str, dict[str, str]] = {}
+        self._edits_start: date | None = None  # the week the edits were made for
+        self._pending_parsed: list[DayMenu] | None = None
+        self.preview_widgets: dict[str, tuple] = {}  # day name → (heading Label, image Label)
         self.variant = StringVar(value="main")
         # Which holiday flavors are switched on (Holidays menu). Remembered
         # between launches in the player config file, as "1"/"0" strings.
@@ -885,6 +893,7 @@ class App:
         )
         if path:
             self.docx_path = path
+            self.edits = {}  # edits belong to the document they were made on
             self.file_label.config(text=Path(path).name, fg=FG)
 
     def parse_and_preview(self):
@@ -923,8 +932,16 @@ class App:
             self._set_busy(False)
             return
 
+        parsed_days = new_days
+        if self._edits_start not in (None, start):
+            self.edits = {}  # a different week's menu: old edits don't apply
+        self._edits_start = start
+        new_days = [apply_row_edits(d, self.edits[d.day_name]) if d.day_name in self.edits else d
+                    for d in parsed_days]
+
         self.status_label.config(text="Plating the preview…", fg=MUTED_FG)
         self.root.update_idletasks()
+        self._pending_parsed = parsed_days
         # Tk isn't thread-safe — read the variants here on the main thread
         # and hand them to the worker rather than calling .get() from there.
         threading.Thread(
@@ -965,6 +982,7 @@ class App:
         for widget in self.preview_frame.winfo_children():
             widget.destroy()
         self._preview_images.clear()
+        self.preview_widgets = {}
 
         for day, png_bytes in previews:
             img = Image.open(io.BytesIO(png_bytes))
@@ -975,12 +993,19 @@ class App:
 
             row = Frame(self.preview_frame, pady=6, bg=BG)
             row.pack(fill="x")
-            Label(
-                row, text=f"{day.day_name} — {format_month_day(day.menu_date)}",
-                anchor="w", bg=BG, fg=FG,
-            ).pack(fill="x")
-            Label(row, image=tk_img, bg=BG).pack()
+            header = Frame(row, bg=BG)
+            header.pack(fill="x")
+            heading = Label(header, text=self._day_heading(day), anchor="w", bg=BG, fg=FG)
+            heading.pack(side="left")
+            if not day.closed:
+                ttk.Button(
+                    header, text="Edit Items…", command=lambda d=day.day_name: self.edit_day(d)
+                ).pack(side="right")
+            image_label = Label(row, image=tk_img, bg=BG)
+            image_label.pack()
+            self.preview_widgets[day.day_name] = (heading, image_label)
 
+        self._parsed_days = self._pending_parsed
         self.days = new_days
         self.status_label.config(text="Fresh off the grill — give it a taste-test before you plate it up.", fg=GOOD_FG)
         self._set_busy(False)
@@ -989,6 +1014,99 @@ class App:
         if warning:
             self.status_label.config(text="Preview's up, but some lines didn't make the sign.", fg=BAD_FG)
             messagebox.showwarning("Something Fell Off the Plate", warning)
+
+    def _day_heading(self, day: DayMenu) -> str:
+        text = f"{day.day_name} — {format_month_day(day.menu_date)}"
+        return text + "  (edited)" if self.edits.get(day.day_name) else text
+
+    def edit_day(self, day_name: str):
+        """Dialog to change one day's menu items by hand (or blank one to drop
+        its row), then re-render just that day's preview."""
+        if self._busy or not self.days or not self._parsed_days:
+            return
+        idx = next(i for i, d in enumerate(self.days) if d.day_name == day_name)
+        parsed = self._parsed_days[idx]
+        current = self.days[idx]
+        original = {r.label: r.item for r in parsed.rows}
+
+        win = Toplevel(self.root, bg=BG)
+        win.title(f"Edit {day_name}")
+        win.transient(self.root)
+        Label(
+            win, text=f"{day_name} — {format_month_day(current.menu_date)}", bg=BG, fg=FG,
+            font=("", 12, "bold"), anchor="w",
+        ).pack(anchor="w", padx=16, pady=(16, 2))
+        Label(
+            win, text="Change any item. Clear one to take its row off the sign.\n"
+                      "Edits last until you pick a different document or week.",
+            bg=BG, fg=MUTED_FG, justify="left", anchor="w",
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+
+        grid = Frame(win, bg=BG)
+        grid.pack(fill="x", padx=16)
+        grid.columnconfigure(1, weight=1)
+        entries: dict[str, StringVar] = {}
+        shown = {r.label: r.item for r in current.rows}
+        for i, row in enumerate(parsed.rows):
+            Label(grid, text=row.label, bg=BG, fg=FG, anchor="w").grid(row=i, column=0, sticky="w", pady=3)
+            var = StringVar(value=shown.get(row.label, ""))
+            entries[row.label] = var
+            Entry(grid, textvariable=var, width=60, bg=PANEL_BG, fg=FG,
+                  insertbackground=FG, relief="flat").grid(row=i, column=1, sticky="ew", padx=(10, 0), pady=3)
+
+        def apply(new_edits: dict[str, str]):
+            if new_edits and not any(
+                new_edits.get(label, item).strip() for label, item in original.items()
+            ):
+                messagebox.showwarning("Empty Plate", "A day needs at least one item.", parent=win)
+                return
+            if new_edits:
+                self.edits[day_name] = new_edits
+            else:
+                self.edits.pop(day_name, None)
+            win.destroy()
+            self._rerender_day(idx)
+
+        def save():
+            apply({label: var.get().strip() for label, var in entries.items()
+                   if var.get().strip() != original[label]})
+
+        buttons = Frame(win, bg=BG)
+        buttons.pack(fill="x", padx=16, pady=16)
+        ttk.Button(buttons, text="Save", command=save).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="right", padx=(0, 8))
+        ttk.Button(buttons, text="Reset to Document", command=lambda: apply({})).pack(side="left")
+
+    def _rerender_day(self, idx: int):
+        parsed = self._parsed_days[idx]
+        edits = self.edits.get(parsed.day_name)
+        new_day = apply_row_edits(parsed, edits) if edits else parsed
+        variant = self._variants_by_day()[parsed.day_name]
+        self.status_label.config(text=f"Re-plating {parsed.day_name}…", fg=MUTED_FG)
+        self._set_busy(True)
+
+        def worker():
+            try:
+                png = render_preview_png_bytes(new_day, variant=variant)
+                self.root.after(0, lambda: self._day_rerendered(idx, new_day, png))
+            except Exception as e:
+                err = f"{e}\n\n{traceback.format_exc()}"
+                self.root.after(0, lambda: self._preview_failed(err))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _day_rerendered(self, idx: int, new_day: DayMenu, png_bytes: bytes):
+        img = Image.open(io.BytesIO(png_bytes))
+        thumb = img.resize((PREVIEW_W, int(img.height * PREVIEW_W / img.width)), Image.LANCZOS)
+        tk_img = ImageTk.PhotoImage(thumb)
+        self._preview_images.append(tk_img)
+        heading, image_label = self.preview_widgets[new_day.day_name]
+        image_label.config(image=tk_img)
+        heading.config(text=self._day_heading(new_day))
+        self.days = self.days[:idx] + [new_day] + self.days[idx + 1:]
+        self.status_label.config(
+            text=f"{new_day.day_name} updated. Export or push will check that it fits.", fg=GOOD_FG)
+        self._set_busy(False)
 
     def generate_schedule(self):
         if not self.days:
